@@ -45,6 +45,10 @@ services:
       API_SERVER_CORS_ORIGINS: ${HERMES_API_SERVER_CORS_ORIGINS:-*}
       # Dashboard off by default (auth required on non-loopback binds).
       HERMES_DASHBOARD: ${HERMES_DASHBOARD:-0}
+      # Inference (also mirrored into data/hermes/.env for Hermes profile load)
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     volumes:
       # Linux bind mount is fine. On Docker Desktop / macOS prefer a named
       # volume for state.db WAL coherence (see docs/architecture.md).
