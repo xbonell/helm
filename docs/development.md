@@ -48,7 +48,19 @@ docker compose config >/dev/null && echo OK
 | 5 Decision gateway | done (`scripts/smoke-decision.sh`) |
 | 6 E2E decision flow | done (`scripts/smoke-e2e-decision.sh`) |
 | 7 Model provider | done (`scripts/smoke-model.sh`, default stub) |
-| 8–10 Personal assistant + weather + daily brief | done (`scripts/generate-daily-brief.sh`) |
+| 8–10 Personal assistant + weather + daily brief | done (`scripts/generate-daily-brief.sh`; Paperclip Routine 07:00 Europe/Madrid) |
+
+## Paperclip daily brief routine
+
+Scheduled at **07:00 Europe/Madrid** (`0 7 * * *`) via Paperclip Routines → Hermes Runtime.
+
+```bash
+./scripts/ensure-hermes-paperclip-key.sh  # once: agent API key → data/hermes/.env
+./scripts/ensure-daily-brief-routine.sh   # idempotent create/update
+./scripts/run-daily-brief-routine.sh      # manual fire + wait for Hermes
+```
+
+Hermes `data/hermes/config.yaml` should have `approvals.mode: off` so unattended `curl` is not blocked. Pause/edit in the Paperclip UI (Routines). Host-only smoke without Paperclip: `./scripts/generate-daily-brief.sh`.
 
 ## Local assumptions
 

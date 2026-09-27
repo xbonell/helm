@@ -7,13 +7,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     DECISION_GATEWAY_URL=http://decision-gateway:8081 \
     MODEL_ROUTER_URL=http://model-router:8082 \
     WEATHER_BASE_URL=https://api.open-meteo.com \
-    WEATHER_LATITUDE=41.3874 \
-    WEATHER_LONGITUDE=2.1686
+    WEATHER_LOCATIONS="Barcelona:41.3874,2.1686;Sant Cugat del Vallès:41.4728,2.0864"
 
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY weather.py brief.py app.py .
+COPY weather.py locations.py brief.py app.py .
 
 EXPOSE 8083
 CMD ["python", "app.py"]

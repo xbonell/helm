@@ -9,7 +9,7 @@
 - First-time setup: `./scripts/bootstrap.sh`.
 - Start / stop: `docker compose up -d` / `docker compose down`.
 - Health check: `./scripts/healthcheck.sh`.
-- Daily brief smoke: `./scripts/generate-daily-brief.sh`.
+- Daily brief smoke: `./scripts/generate-daily-brief.sh` (host) or `./scripts/run-daily-brief-routine.sh` (Paperclip → Hermes). Schedule: `./scripts/ensure-hermes-paperclip-key.sh` then `./scripts/ensure-daily-brief-routine.sh` (07:00 Europe/Madrid).
 - Compose validation without startup: `set -a && source .env && set +a && docker compose config >/dev/null`.
 
 ## Required Env

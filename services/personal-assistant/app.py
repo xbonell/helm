@@ -6,7 +6,7 @@ import os
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 import uvicorn
 
 from brief import generate_daily_brief
@@ -15,8 +15,7 @@ app = FastAPI(title="helm-personal-assistant", version="0.1.0")
 
 
 class BriefRequest(BaseModel):
-    latitude: float | None = Field(default=None)
-    longitude: float | None = Field(default=None)
+    pass
 
 
 @app.get("/health")
@@ -26,9 +25,8 @@ def health() -> dict[str, Any]:
 
 @app.post("/v1/generate-daily-brief")
 def daily_brief(body: BriefRequest | None = None) -> dict[str, Any]:
-    body = body or BriefRequest()
     try:
-        return generate_daily_brief(latitude=body.latitude, longitude=body.longitude)
+        return generate_daily_brief()
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 

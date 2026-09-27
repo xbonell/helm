@@ -32,6 +32,9 @@ if [[ ! -f data/hermes/config.yaml ]]; then
   cat >data/hermes/config.yaml <<'EOF'
 # Seeded by scripts/bootstrap.sh — edit as needed.
 # Model provider details typically live in data/hermes/.env
+# Unattended Paperclip wakes need approvals.mode off (or curl on command_allowlist).
+approvals:
+  mode: off
 EOF
   echo "Seeded data/hermes/config.yaml"
 fi

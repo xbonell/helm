@@ -19,16 +19,21 @@ assert body.get("command") == "generate-daily-brief"
 assert body.get("date")
 assert body["routing"]["choice"] in {"personal", "finance", "development", "legal"}
 weather = body["sections"]["weather"]
-assert "temperature_c" in weather["data"]
-assert weather["data"]["source"] == "open-meteo"
-assert weather.get("narrative")
+locs = weather["locations"]
+assert len(locs) == 2
+names = {loc["name"] for loc in locs}
+assert names == {"Barcelona", "Sant Cugat del Vallès"}
+for loc in locs:
+    assert loc["data"]["source"] == "open-meteo"
+    assert "temperature_c" in loc["data"]
+    assert loc.get("narrative")
 assert body["sections"]["agenda"]
 assert body["sections"]["priorities"]
 assert body["sections"]["fitness"]
 print(
-    f"OK daily-brief date={body['date']} route={body['routing']['choice']} "
-    f"weather={weather['data']['condition']} {weather['data']['temperature_c']}C"
+    f"OK daily-brief date={body['date']} route={body['routing']['choice']}"
 )
-print("--- narrative ---")
-print(weather["narrative"])
+for loc in locs:
+    print(f"- {loc['name']}: {loc['data']['condition']} {loc['data']['temperature_c']}C")
+    print(f"  {loc['narrative']}")
 PY

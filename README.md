@@ -52,8 +52,11 @@ Copy from `.env.example`. Required before `compose up`:
 | `HERMES_API_SERVER_KEY` | Hermes OpenAI-compatible API auth (≥8 chars) |
 | `PAPERCLIP_DEPLOYMENT_MODE` | `authenticated` for Docker (`local_trusted` is loopback-only) |
 | `PAPERCLIP_BIND` | `lan` so the container can listen on `0.0.0.0` |
+| `PAPERCLIP_ALLOWED_HOSTNAMES` | Docker DNS hosts Paperclip accepts (default `paperclip,localhost,127.0.0.1`) |
 
 Optional: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `DECIDER_MODEL`, `DECIDER_DEVICE`, ports — see `.env.example`.
+
+`personal-assistant` reads **`WEATHER_LOCATIONS`** (semicolon-separated `name:lat,lon` entries). Default: Barcelona and Sant Cugat del Vallès — same string in `compose.yaml`, `.env.example`, and the service fallback. The daily brief exposes `sections.weather.locations[]` (one Open-Meteo fetch and narrative line per named place).
 
 ## Starting / stopping
 
@@ -88,11 +91,20 @@ Personal Asst   OK
 
 ## Daily brief
 
+Scheduled via Paperclip Routine **Daily brief** at `0 7 * * *` (`Europe/Madrid`), assigned to Hermes Runtime. Hermes calls `personal-assistant:8083/v1/generate-daily-brief`, comments the result, and marks the issue done.
+
 ```bash
+# Create/update the routine + cron trigger (idempotent)
+./scripts/ensure-daily-brief-routine.sh
+
+# Manual fire (smoke / catch-up)
+./scripts/run-daily-brief-routine.sh
+
+# Host-side brief without Paperclip
 ./scripts/generate-daily-brief.sh
 ```
 
-Uses Decider for routing, Open-Meteo for live weather, mocked agenda/fitness/news, and `model-router` for the weather narrative (`MODEL_PROVIDER=stub` by default).
+Pause or edit the schedule in Paperclip → Routines. Hermes needs `approvals.mode: off` (unattended curl) and `PAPERCLIP_API_KEY` in `data/hermes/.env` (mint with `./scripts/ensure-hermes-paperclip-key.sh`). Paperclip must allow Docker DNS hosts via `PAPERCLIP_ALLOWED_HOSTNAMES=paperclip,localhost,127.0.0.1`. Uses Decider for routing, Open-Meteo for each configured location in `WEATHER_LOCATIONS`, mocked agenda/fitness/news, and one `model-router` call for all weather narratives (`MODEL_PROVIDER=stub` by default). `./scripts/generate-daily-brief.sh` asserts both default cities by name.
 
 ## Smoke tests
 
