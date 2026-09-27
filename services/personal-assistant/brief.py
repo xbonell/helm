@@ -10,6 +10,7 @@ import httpx
 
 from locations import parse_weather_locations
 from weather import WeatherSnapshot, fetch_weather
+from weather_emoji import emoji_for_condition
 
 
 def mock_context() -> dict[str, Any]:
@@ -157,6 +158,7 @@ def generate_daily_brief(
                     {
                         "name": location.name,
                         "data": snapshot.as_dict(),
+                        "emoji": emoji_for_condition(snapshot.condition),
                         "narrative": narratives[location.name]
                         or _template_narrative(snapshot),
                     }

@@ -17,11 +17,26 @@ const TZ_NAME = "Europe/Madrid";
 
 const DESCRIPTION = `Generate the Helm personal-assistant daily brief.
 
+Use the personal-assistant service response as the source of truth.
+
 Steps (do these exactly):
 1. Use the terminal tool (not execute_code) to run:
    curl -sS -m 60 -X POST http://personal-assistant:8083/v1/generate-daily-brief -H 'Content-Type: application/json' -d '{}'
-2. Comment on this issue with: date, Decider route (routing.choice), weather for each entry in sections.weather.locations (name, condition/temp from data, narrative per location), and the priorities list — taken from that JSON response.
-3. Mark this issue done via Paperclip API using \$PAPERCLIP_API_KEY from the environment (never invent or paste keys). Use this issue's id and this run's id from the wake payload:
+2. Build a short summary from the JSON:
+   - date, Decider route (routing.choice)
+   - for each sections.weather.locations entry: "{emoji} {name}: {condition}, {temp}°C" plus narrative
+   - priorities list
+3. Comment that summary on this Paperclip issue.
+4. Send the same summary to Telegram DM using the terminal tool (preferred over send_message). Build a JSON body with chat_id=\$TELEGRAM_HOME_CHANNEL and text=the summary, then:
+   curl -sS -m 30 -X POST "https://api.telegram.org/bot\$TELEGRAM_BOT_TOKEN/sendMessage" \\
+     -H 'Content-Type: application/json' \\
+     --data-binary @- <<'TG'
+   {"chat_id": <TELEGRAM_HOME_CHANNEL_NUMBER>, "text": "<SUMMARY>"}
+   TG
+   Use the real numeric chat id and the exact summary text (escape JSON properly; python3 -c 'import json; print(json.dumps(...))' is fine). Never print or comment the bot token.
+5. After steps 1–4, finish disposition in this order only:
+   - If Telegram send failed (brief generated and Paperclip comment posted): add a short warning comment on this issue first.
+   - Mark this issue done via Paperclip API using \$PAPERCLIP_API_KEY from the environment (never invent or paste keys). Use this issue's id and this run's id from the wake payload (whether or not Telegram succeeded):
    PAPERCLIP_API_BASE="\${PAPERCLIP_API_URL%/}"
    PAPERCLIP_API_BASE="\${PAPERCLIP_API_BASE%/api}"
    curl -sS -X PATCH "\$PAPERCLIP_API_BASE/api/issues/<ISSUE_ID>" \\
@@ -30,7 +45,7 @@ Steps (do these exactly):
      -H "Content-Type: application/json" \\
      -d '{"status":"done","comment":"Daily brief delivered from personal-assistant."}'
 
-Do not invent a parallel brief. Do not use execute_code. Use the personal-assistant service response as the source of truth.`;
+Do not invent a parallel brief. Do not use execute_code.`;
 
 function hashBearerToken(token) {
   return createHash("sha256").update(token).digest("hex");

@@ -119,11 +119,13 @@ def test_generate_daily_brief_builds_multi_location_weather_with_fallback(
         {
             "name": "Barcelona",
             "data": snapshots[0].as_dict(),
+            "emoji": "☀️",
             "narrative": "Sunny and mild.",
         },
         {
             "name": "Sant Cugat del Vallès",
             "data": snapshots[1].as_dict(),
+            "emoji": "☁️",
             "narrative": "overcast, 22.0°C, wind 10.0 km/h.",
         },
     ]

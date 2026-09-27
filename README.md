@@ -91,7 +91,7 @@ Personal Asst   OK
 
 ## Daily brief
 
-Scheduled via Paperclip Routine **Daily brief** at `0 7 * * *` (`Europe/Madrid`), assigned to Hermes Runtime. Hermes calls `personal-assistant:8083/v1/generate-daily-brief`, comments the result, and marks the issue done.
+Scheduled via Paperclip Routine **Daily brief** at `0 7 * * *` (`Europe/Madrid`), assigned to Hermes Runtime. Hermes calls `personal-assistant:8083/v1/generate-daily-brief`, comments the result, sends the same summary to your Telegram DM (when paired), and marks the issue done. Operator setup (BotFather, allowlist, home channel): [docs/telegram-daily-brief.md](docs/telegram-daily-brief.md).
 
 ```bash
 # Create/update the routine + cron trigger (idempotent)

@@ -62,6 +62,8 @@ Scheduled at **07:00 Europe/Madrid** (`0 7 * * *`) via Paperclip Routines → He
 
 Hermes `data/hermes/config.yaml` should have `approvals.mode: off` so unattended `curl` is not blocked. Pause/edit in the Paperclip UI (Routines). Host-only smoke without Paperclip: `./scripts/generate-daily-brief.sh`.
 
+Telegram DM delivery (BotFather, `TELEGRAM_*` in `data/hermes/.env`, smoke): [telegram-daily-brief.md](telegram-daily-brief.md).
+
 ## Local assumptions
 
 - `PAPERCLIP_DEPLOYMENT_MODE=authenticated` + `PAPERCLIP_BIND=lan` for Docker
