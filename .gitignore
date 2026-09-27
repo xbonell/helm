@@ -1,0 +1,40 @@
+# Secrets and local env
+.env
+.env.*
+!.env.example
+!.env.production.example
+
+# Runtime data (persisted locally; backed up via scripts/backup.sh)
+data/paperclip/
+data/hermes/
+data/decider-hf/
+data/backups/
+!data/.gitkeep
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+*.code-workspace
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Node (if tooling is added later)
+node_modules/
+
+# Logs
+*.log
+logs/

@@ -1,0 +1,26 @@
+# Local development overrides (auto-loaded by `docker compose`).
+# Production: use `docker compose -f compose.yaml` only, or a separate
+# compose.production.yaml that binds services to 127.0.0.1 behind a reverse proxy.
+
+services:
+  paperclip:
+    ports:
+      - "${PAPERCLIP_PORT:-3100}:3100"
+
+  hermes:
+    ports:
+      - "127.0.0.1:${HERMES_API_PORT:-8642}:8642"
+      # Uncomment and set HERMES_DASHBOARD=1 + basic-auth env to enable:
+      # - "127.0.0.1:${HERMES_DASHBOARD_PORT:-9119}:9119"
+
+  decision-gateway:
+    ports:
+      - "127.0.0.1:${DECISION_GATEWAY_PORT:-8081}:8081"
+
+  model-router:
+    ports:
+      - "127.0.0.1:${MODEL_ROUTER_PORT:-8082}:8082"
+
+  personal-assistant:
+    ports:
+      - "127.0.0.1:${PERSONAL_ASSISTANT_PORT:-8083}:8083"

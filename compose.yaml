@@ -1,0 +1,150 @@
+# Helm — self-hosted AI agent platform
+# Local MVP and single-VPS production share this file.
+# Local port bindings live in compose.override.yaml.
+
+name: helm
+
+networks:
+  helm:
+    name: helm
+    driver: bridge
+
+services:
+  paperclip:
+    image: ghcr.io/paperclipai/paperclip:latest
+    restart: unless-stopped
+    pids_limit: 2048
+    environment:
+      HOST: "0.0.0.0"
+      PAPERCLIP_HOME: /paperclip
+      # Docker must bind non-loopback; local_trusted forbids that.
+      # Match upstream quickstart: authenticated + private + lan bind.
+      PAPERCLIP_DEPLOYMENT_MODE: ${PAPERCLIP_DEPLOYMENT_MODE:-authenticated}
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: ${PAPERCLIP_DEPLOYMENT_EXPOSURE:-private}
+      PAPERCLIP_BIND: ${PAPERCLIP_BIND:-lan}
+      PAPERCLIP_PUBLIC_URL: ${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}
+      PAPERCLIP_ALLOWED_HOSTNAMES: ${PAPERCLIP_ALLOWED_HOSTNAMES:-}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - ./data/paperclip:/paperclip
+    networks:
+      - helm
+    # Host port published in compose.override.yaml for local development.
+
+  hermes:
+    image: nousresearch/hermes-agent:latest
+    restart: unless-stopped
+    command: gateway run
+    environment:
+      API_SERVER_ENABLED: "true"
+      API_SERVER_HOST: "0.0.0.0"
+      API_SERVER_PORT: "8642"
+      API_SERVER_KEY: ${HERMES_API_SERVER_KEY:?HERMES_API_SERVER_KEY must be set}
+      API_SERVER_CORS_ORIGINS: ${HERMES_API_SERVER_CORS_ORIGINS:-*}
+      # Dashboard off by default (auth required on non-loopback binds).
+      HERMES_DASHBOARD: ${HERMES_DASHBOARD:-0}
+    volumes:
+      # Linux bind mount is fine. On Docker Desktop / macOS prefer a named
+      # volume for state.db WAL coherence (see docs/architecture.md).
+      - ./data/hermes:/opt/data
+    networks:
+      - helm
+    # Host ports published in compose.override.yaml for local development.
+
+  decider:
+    build:
+      context: ./services/decider
+    restart: unless-stopped
+    environment:
+      DECIDER_MODEL: ${DECIDER_MODEL:-Mapika/decider-2b}
+      DECIDER_DEVICE: ${DECIDER_DEVICE:-cpu}
+      # Skip CUDA graph warm-up on CPU/MPS (faster cold start).
+      DECIDER_WARMUP: ${DECIDER_WARMUP:-0}
+      # Force Transformers pure-PyTorch Qwen3.5 path (FLA/Triton fails on CPU).
+      USE_HUB_KERNELS: "NO"
+      HF_HOME: /cache/huggingface
+    volumes:
+      - ./data/decider-hf:/cache/huggingface
+    networks:
+      - helm
+    # Internal only — no host ports in base compose.
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 300s
+
+  decision-gateway:
+    build:
+      context: ./services/decision-gateway
+    restart: unless-stopped
+    environment:
+      DECIDER_BASE_URL: http://decider:8000
+      DECISION_GATEWAY_HOST: "0.0.0.0"
+      DECISION_GATEWAY_PORT: "8081"
+    depends_on:
+      - decider
+    networks:
+      - helm
+    expose:
+      - "8081"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/health', timeout=5)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  model-router:
+    build:
+      context: ./services/model-router
+    restart: unless-stopped
+    environment:
+      MODEL_ROUTER_HOST: "0.0.0.0"
+      MODEL_ROUTER_PORT: "8082"
+      # stub = zero-cost local proof; openai_compatible when MODEL_API_KEY is set
+      MODEL_PROVIDER: ${MODEL_PROVIDER:-stub}
+      MODEL_NAME: ${MODEL_NAME:-stub/local}
+      MODEL_BASE_URL: ${MODEL_BASE_URL:-}
+      MODEL_API_KEY: ${MODEL_API_KEY:-}
+    networks:
+      - helm
+    expose:
+      - "8082"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8082/health', timeout=5)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  personal-assistant:
+    build:
+      context: ./services/personal-assistant
+    restart: unless-stopped
+    environment:
+      PERSONAL_ASSISTANT_HOST: "0.0.0.0"
+      PERSONAL_ASSISTANT_PORT: "8083"
+      DECISION_GATEWAY_URL: http://decision-gateway:8081
+      MODEL_ROUTER_URL: http://model-router:8082
+      WEATHER_BASE_URL: ${WEATHER_BASE_URL:-https://api.open-meteo.com}
+      WEATHER_LATITUDE: ${WEATHER_LATITUDE:-41.3874}
+      WEATHER_LONGITUDE: ${WEATHER_LONGITUDE:-2.1686}
+    depends_on:
+      - decision-gateway
+      - model-router
+    networks:
+      - helm
+    expose:
+      - "8083"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8083/health', timeout=5)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
