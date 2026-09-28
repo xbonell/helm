@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 import os
 
 import httpx
@@ -11,6 +12,18 @@ import httpx
 from locations import parse_weather_locations
 from weather import WeatherBundle, fetch_weather_bundle
 from weather_emoji import emoji_for_condition
+
+BRIEF_TZ = ZoneInfo("Europe/Madrid")
+
+
+def brief_local_date(*, now: datetime | None = None) -> str:
+    """Calendar date for the brief in Europe/Madrid (matches weather day boundaries)."""
+    current = now if now is not None else datetime.now(BRIEF_TZ)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=BRIEF_TZ)
+    else:
+        current = current.astimezone(BRIEF_TZ)
+    return current.date().isoformat()
 
 
 def mock_context() -> dict[str, Any]:
@@ -141,7 +154,7 @@ def generate_daily_brief(
         "WEATHER_BASE_URL", "https://api.open-meteo.com"
     )
 
-    today = date.today().isoformat()
+    today = brief_local_date()
     decision = route_handler(f"generate-daily-brief for {today}", decision_url)
     raw_locations = os.environ.get(
         "WEATHER_LOCATIONS",

@@ -1,11 +1,25 @@
 from __future__ import annotations
 
+from datetime import datetime
 from unittest.mock import Mock
+from zoneinfo import ZoneInfo
 
 import httpx
 import brief
-from brief import split_location_narratives
+from brief import brief_local_date, split_location_narratives
 from weather import WeatherBundle, WeatherDaySummary, WeatherSnapshot
+
+MADRID = ZoneInfo("Europe/Madrid")
+
+
+def test_brief_local_date_uses_europe_madrid() -> None:
+    # UTC 23:30 on 27th is still 28th in Madrid (CEST, UTC+2)
+    assert brief_local_date(now=datetime(2026, 9, 27, 23, 30, tzinfo=ZoneInfo("UTC"))) == "2026-09-28"
+    assert brief_local_date(now=datetime(2026, 9, 28, 1, 0, tzinfo=MADRID)) == "2026-09-28"
+
+
+def test_brief_local_date_naive_treated_as_madrid() -> None:
+    assert brief_local_date(now=datetime(2026, 9, 28, 7, 0)) == "2026-09-28"
 
 
 def _snapshot(latitude: float, longitude: float, condition: str) -> WeatherSnapshot:

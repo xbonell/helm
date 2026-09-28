@@ -56,7 +56,7 @@ Copy from `.env.example`. Required before `compose up`:
 
 Optional: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `DECIDER_MODEL`, `DECIDER_DEVICE`, ports — see `.env.example`.
 
-`personal-assistant` reads **`WEATHER_LOCATIONS`** (semicolon-separated `name:lat,lon` entries). Default: Barcelona and Sant Cugat del Vallès — same string in `compose.yaml`, `.env.example`, and the service fallback. The daily brief exposes `sections.weather.locations[]` (one Open-Meteo fetch and narrative line per named place).
+`personal-assistant` reads **`WEATHER_LOCATIONS`** (semicolon-separated `name:lat,lon` entries). Default: Barcelona and Sant Cugat del Vallès — same string in `compose.yaml`, `.env.example`, and the service fallback. The daily brief exposes `sections.weather.locations[]` with **now / rest-of-today / tomorrow** per place (Open-Meteo, `Europe/Madrid`) and one shared `sections.weather.narrative`.
 
 ## Starting / stopping
 
@@ -104,7 +104,7 @@ Scheduled via Paperclip Routine **Daily brief** at `0 7 * * *` (`Europe/Madrid`)
 ./scripts/generate-daily-brief.sh
 ```
 
-Pause or edit the schedule in Paperclip → Routines. Hermes needs `approvals.mode: off` (unattended curl) and `PAPERCLIP_API_KEY` in `data/hermes/.env` (mint with `./scripts/ensure-hermes-paperclip-key.sh`). Paperclip must allow Docker DNS hosts via `PAPERCLIP_ALLOWED_HOSTNAMES=paperclip,localhost,127.0.0.1`. Uses Decider for routing, Open-Meteo for each configured location in `WEATHER_LOCATIONS`, mocked agenda/fitness/news, and one `model-router` call for all weather narratives (`MODEL_PROVIDER=stub` by default). `./scripts/generate-daily-brief.sh` asserts both default cities by name.
+Pause or edit the schedule in Paperclip → Routines. Hermes needs `approvals.mode: off` (unattended curl) and `PAPERCLIP_API_KEY` in `data/hermes/.env` (mint with `./scripts/ensure-hermes-paperclip-key.sh`). Paperclip must allow Docker DNS hosts via `PAPERCLIP_ALLOWED_HOSTNAMES=paperclip,localhost,127.0.0.1`. Uses Decider for routing, Open-Meteo day-ahead weather per `WEATHER_LOCATIONS`, mocked agenda/fitness/news, and one `model-router` call for the shared weather narrative (`MODEL_PROVIDER=stub` by default). `./scripts/generate-daily-brief.sh` asserts both default cities plus `now`/`today`/`tomorrow` and the shared narrative.
 
 ## Smoke tests
 
