@@ -9,7 +9,7 @@ import os
 import httpx
 
 from locations import parse_weather_locations
-from weather import WeatherSnapshot, fetch_weather
+from weather import WeatherBundle, fetch_weather_bundle
 from weather_emoji import emoji_for_condition
 
 
@@ -69,34 +69,57 @@ def split_location_narratives(text: str, names: list[str]) -> dict[str, str]:
     return narratives
 
 
-def _template_narrative(weather: WeatherSnapshot) -> str:
-    return (
-        f"{weather.condition}, {weather.temperature_c}°C, "
-        f"wind {weather.wind_speed_kmh} km/h."
-    )
+def _location_payload(name: str, bundle: WeatherBundle) -> dict[str, Any]:
+    return {
+        "name": name,
+        "emoji": emoji_for_condition(bundle.now.condition),
+        "now": {**bundle.now.as_dict()},
+        "today": {
+            **bundle.today.as_dict(),
+            "emoji": emoji_for_condition(bundle.today.condition),
+        },
+        "tomorrow": {
+            **bundle.tomorrow.as_dict(),
+            "emoji": emoji_for_condition(bundle.tomorrow.condition),
+        },
+    }
 
 
-def render_multi_weather_narratives(
-    named: list[tuple[str, WeatherSnapshot]],
+def _fallback_shared_narrative(locations_payload: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for loc in locations_payload:
+        now = loc["now"]
+        today = loc["today"]
+        tomorrow = loc["tomorrow"]
+        parts.append(
+            f"{loc['name']}: {now['condition']}, {now['temperature_c']}°C now; "
+            f"today {today['condition']} {today['low_c']}–{today['high_c']}°C; "
+            f"tomorrow {tomorrow['condition']} {tomorrow['low_c']}–{tomorrow['high_c']}°C."
+        )
+    return " ".join(parts)
+
+
+def render_shared_weather_narrative(
+    locations_payload: list[dict[str, Any]],
     model_url: str,
     timeout: float = 120.0,
 ) -> dict[str, Any]:
-    payload_lines = []
-    for name, snapshot in named:
-        payload_lines.append(f"{name}: {snapshot.as_dict()}")
-    names = [name for name, _ in named]
-    name_list = ", ".join(names)
+    count = len(locations_payload)
+    if count == 1:
+        locations_phrase = "the location's"
+    else:
+        locations_phrase = f"all {count} locations'"
     prompt = (
-        "Write exactly one short briefing sentence per location from this weather data. "
-        f"Output exactly {len(names)} lines, each starting with the location name "
-        f"followed by a colon. Location names in order: {name_list}. No preamble.\n"
-        + "\n".join(payload_lines)
+        "Write one short paragraph (2–4 sentences) for a morning personal brief. "
+        f"Cover {locations_phrase} current conditions, the rest of today, and tomorrow. "
+        "No bullet list, no preamble, no location-labeled lines.\n"
+        f"{locations_payload}"
     )
     with httpx.Client(timeout=timeout) as client:
         response = client.post(
             f"{model_url.rstrip('/')}/v1/generate",
             json={
-                "system": "You write concise personal daily brief weather lines.",
+                "system": "You write concise personal daily brief weather summaries.",
                 "prompt": prompt,
                 "max_tokens": 200,
                 "temperature": 0.2,
@@ -125,23 +148,27 @@ def generate_daily_brief(
         "Barcelona:41.3874,2.1686;Sant Cugat del Vallès:41.4728,2.0864",
     )
     locations = parse_weather_locations(raw_locations)
-    snapshots = [
-        fetch_weather(
+    bundles = [
+        fetch_weather_bundle(
             location.latitude,
             location.longitude,
             base_url=weather_base_url,
         )
         for location in locations
     ]
-    named_snapshots = [
-        (location.name, snapshot)
-        for location, snapshot in zip(locations, snapshots)
+    locations_payload = [
+        _location_payload(location.name, bundle)
+        for location, bundle in zip(locations, bundles)
     ]
-    weather_gen = render_multi_weather_narratives(named_snapshots, model_url)
-    narratives = split_location_narratives(
-        weather_gen.get("text") or "",
-        [location.name for location in locations],
-    )
+    try:
+        weather_gen = render_shared_weather_narrative(locations_payload, model_url)
+    except httpx.HTTPError:
+        weather_gen = {}
+    except ValueError:
+        weather_gen = {}
+    narrative = (weather_gen.get("text") or "").strip()
+    if not narrative:
+        narrative = _fallback_shared_narrative(locations_payload)
     mocked = mock_context()
 
     brief = {
@@ -154,16 +181,8 @@ def generate_daily_brief(
         },
         "sections": {
             "weather": {
-                "locations": [
-                    {
-                        "name": location.name,
-                        "data": snapshot.as_dict(),
-                        "emoji": emoji_for_condition(snapshot.condition),
-                        "narrative": narratives[location.name]
-                        or _template_narrative(snapshot),
-                    }
-                    for location, snapshot in zip(locations, snapshots)
-                ],
+                "locations": locations_payload,
+                "narrative": narrative,
                 "model": {
                     "provider": weather_gen.get("provider"),
                     "model": weather_gen.get("model"),

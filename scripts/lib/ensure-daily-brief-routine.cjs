@@ -24,7 +24,9 @@ Steps (do these exactly):
    curl -sS -m 60 -X POST http://personal-assistant:8083/v1/generate-daily-brief -H 'Content-Type: application/json' -d '{}'
 2. Build a short summary from the JSON:
    - date, Decider route (routing.choice)
-   - for each sections.weather.locations entry: "{emoji} {name}: {condition}, {temp}°C" plus narrative
+   - Weather section: for each sections.weather.locations entry one line:
+     "{emoji} {name} — now: {now.condition}, {now.temperature_c}°C | today: {today.emoji} {today.condition}, {today.low_c}–{today.high_c}°C, precip {today.precipitation_probability}% | tomorrow: {tomorrow.emoji} {tomorrow.condition}, {tomorrow.low_c}–{tomorrow.high_c}°C, precip {tomorrow.precipitation_probability}%"
+   - Narrative section: sections.weather.narrative (one shared paragraph; no per-location narratives)
    - priorities list
 3. Comment that summary on this Paperclip issue.
 4. Send the same summary to Telegram DM using the terminal tool (preferred over send_message). Build a JSON body with chat_id=\$TELEGRAM_HOME_CHANNEL and text=the summary, then:

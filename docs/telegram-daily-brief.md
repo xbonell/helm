@@ -87,7 +87,7 @@ Expected:
 
 - Heartbeat **succeeded**
 - Issue **done**
-- Issue comments include emoji weather lines
+- Issue comments include **Weather** lines (now / rest-of-today / tomorrow per city) plus a **Narrative** block (`sections.weather.narrative`)
 - **Telegram DM** with the same summary
 
 Host-only brief (no Paperclip, no Telegram send): `./scripts/generate-daily-brief.sh`.
