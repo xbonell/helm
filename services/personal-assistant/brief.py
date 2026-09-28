@@ -9,6 +9,7 @@ import os
 
 import httpx
 
+from gcal import fetch_agenda
 from locations import parse_weather_locations
 from weather import WeatherBundle, fetch_weather_bundle
 from weather_emoji import emoji_for_condition
@@ -183,6 +184,25 @@ def generate_daily_brief(
     if not narrative:
         narrative = _fallback_shared_narrative(locations_payload)
     mocked = mock_context()
+    agenda_result = fetch_agenda()
+    sections: dict[str, Any] = {
+        "weather": {
+            "locations": locations_payload,
+            "narrative": narrative,
+            "model": {
+                "provider": weather_gen.get("provider"),
+                "model": weather_gen.get("model"),
+                "usage": weather_gen.get("usage"),
+            },
+        },
+        "agenda": [item.as_dict() for item in agenda_result.items],
+        "agenda_status": agenda_result.status,
+        "priorities": mocked["priorities"],
+        "fitness": mocked["fitness"],
+        "news": mocked["news"],
+    }
+    if agenda_result.error:
+        sections["agenda_error"] = agenda_result.error
 
     brief = {
         "command": "generate-daily-brief",
@@ -192,20 +212,6 @@ def generate_daily_brief(
             "confidence": decision.get("confidence"),
             "engine": decision.get("engine"),
         },
-        "sections": {
-            "weather": {
-                "locations": locations_payload,
-                "narrative": narrative,
-                "model": {
-                    "provider": weather_gen.get("provider"),
-                    "model": weather_gen.get("model"),
-                    "usage": weather_gen.get("usage"),
-                },
-            },
-            "agenda": mocked["agenda"],
-            "priorities": mocked["priorities"],
-            "fitness": mocked["fitness"],
-            "news": mocked["news"],
-        },
+        "sections": sections,
     }
     return brief

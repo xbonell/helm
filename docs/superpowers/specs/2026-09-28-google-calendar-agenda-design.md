@@ -25,7 +25,7 @@ Replace mocked `sections.agenda` with real events from the operator’s Google C
 
 ## Architecture
 
-1. New `calendar.py` in personal-assistant: refresh access token → list events for each configured calendar ID → normalize.
+1. New `gcal.py` in personal-assistant: refresh access token → list events for each configured calendar ID → normalize.
 2. `generate_daily_brief` fills `sections.agenda` from that module; fitness / news / priorities stay mocked.
 3. Hermes Daily brief DESCRIPTION adds an **Agenda** block (time + title lines).
 4. Operator one-shot OAuth consent (script or doc) produces the refresh token; never commit or paste into issues/Telegram.

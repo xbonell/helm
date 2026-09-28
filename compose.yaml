@@ -138,6 +138,10 @@ services:
       MODEL_ROUTER_URL: http://model-router:8082
       WEATHER_BASE_URL: ${WEATHER_BASE_URL:-https://api.open-meteo.com}
       WEATHER_LOCATIONS: ${WEATHER_LOCATIONS:-Barcelona:41.3874,2.1686;Sant Cugat del Vallès:41.4728,2.0864}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REFRESH_TOKEN: ${GOOGLE_REFRESH_TOKEN:-}
+      GOOGLE_CALENDAR_IDS: ${GOOGLE_CALENDAR_IDS:-primary}
     depends_on:
       - decision-gateway
       - model-router

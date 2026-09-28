@@ -27,6 +27,10 @@ Steps (do these exactly):
    - Weather section: for each sections.weather.locations entry one line:
      "{emoji} {name} — now: {now.condition}, {now.temperature_c}°C | today: {today.emoji} {today.condition}, {today.low_c}–{today.high_c}°C, precip {today.precipitation_probability}% | tomorrow: {tomorrow.emoji} {tomorrow.condition}, {tomorrow.low_c}–{tomorrow.high_c}°C, precip {tomorrow.precipitation_probability}%"
    - Narrative section: sections.weather.narrative (one shared paragraph; no per-location narratives)
+   - Agenda section (after Narrative, before priorities); never mix ok bullets with unconfigured/error warnings:
+     When sections.agenda_status is "ok": line "Agenda", then one bullet per sections.agenda entry "- {date} {time} {title}" (time as returned, e.g. "09:30" or "all-day"). If agenda is empty: "Agenda" then "- No events" only.
+     When sections.agenda_status is "unconfigured": exactly one line (no "Agenda" header, no bullets): "Agenda: calendar not configured (Google OAuth env missing on personal-assistant)." — no secrets.
+     When sections.agenda_status is "error": exactly one line (no "Agenda" header, no bullets): "Agenda: calendar unavailable." plus sections.agenda_error if present (short, no tokens).
    - priorities list
 3. Comment that summary on this Paperclip issue.
 4. Send the same summary to Telegram DM using the terminal tool (preferred over send_message). Build a JSON body with chat_id=\$TELEGRAM_HOME_CHANNEL and text=the summary, then:

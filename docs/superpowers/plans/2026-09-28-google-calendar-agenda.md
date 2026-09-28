@@ -25,7 +25,7 @@
 
 | File | Responsibility |
 |------|----------------|
-| `services/personal-assistant/calendar.py` | OAuth refresh, list events, normalize, status |
+| `services/personal-assistant/gcal.py` | OAuth refresh, list events, normalize, status |
 | `services/personal-assistant/test_calendar.py` | Fixture-based parser + status tests |
 | `services/personal-assistant/brief.py` | Wire `fetch_agenda` into `sections.agenda` |
 | `services/personal-assistant/test_brief_agenda.py` | Brief assembly with mocked calendar |

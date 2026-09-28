@@ -12,7 +12,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY weather.py weather_emoji.py locations.py brief.py app.py .
+COPY weather.py weather_emoji.py locations.py gcal.py brief.py app.py .
 
 EXPOSE 8083
 CMD ["python", "app.py"]

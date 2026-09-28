@@ -87,7 +87,7 @@ Expected:
 
 - Heartbeat **succeeded**
 - Issue **done**
-- Issue comments include **Weather** lines (now / rest-of-today / tomorrow per city) plus a **Narrative** block (`sections.weather.narrative`)
+- Issue comments include **Weather** lines (now / rest-of-today / tomorrow per city), a **Narrative** block (`sections.weather.narrative`), then an **Agenda** block (`sections.agenda` / `sections.agenda_status` — event lines or “No events”; short warning if unconfigured or error)
 - **Telegram DM** with the same summary
 
 Host-only brief (no Paperclip, no Telegram send): `./scripts/generate-daily-brief.sh`.

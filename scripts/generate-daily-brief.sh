@@ -43,11 +43,23 @@ for loc in locs:
     assert "precipitation_probability" in tomorrow
 assert weather.get("narrative")
 assert isinstance(weather["narrative"], str)
-assert body["sections"]["agenda"]
+sections = body["sections"]
+agenda = sections.get("agenda")
+assert isinstance(agenda, list)
+agenda_status = sections.get("agenda_status")
+assert agenda_status in {"ok", "unconfigured", "error"}
+if agenda_status == "error":
+    err = sections.get("agenda_error", "")
+    assert isinstance(err, str) and err
+if agenda_status == "ok" and agenda:
+    for ev in agenda:
+        assert isinstance(ev, dict)
+        assert "date" in ev and "time" in ev and "title" in ev
 assert body["sections"]["priorities"]
 assert body["sections"]["fitness"]
 print(
-    f"OK daily-brief date={body['date']} route={body['routing']['choice']}"
+    f"OK daily-brief date={body['date']} route={body['routing']['choice']} "
+    f"agenda_status={agenda_status} agenda_count={len(agenda)}"
 )
 for loc in locs:
     n, t, tm = loc["now"], loc["today"], loc["tomorrow"]
@@ -57,4 +69,15 @@ for loc in locs:
         f"tomorrow {tm.get('emoji', '')} {tm['condition']} {tm['low_c']}–{tm['high_c']}C precip {tm['precipitation_probability']}%"
     )
 print(f"Narrative: {weather['narrative'][:200]}")
+print(f"Agenda ({agenda_status}):")
+if agenda_status == "ok":
+    if agenda:
+        for ev in agenda:
+            print(f"- {ev['date']} {ev['time']} {ev['title']}")
+    else:
+        print("- No events")
+elif agenda_status == "unconfigured":
+    print("- Calendar not configured (set Google OAuth env on personal-assistant).")
+else:
+    print(f"- Calendar unavailable: {sections.get('agenda_error', 'error')}")
 PY

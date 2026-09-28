@@ -58,6 +58,8 @@ Optional: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `DECIDER_MODEL`, `DECIDER_DEVIC
 
 `personal-assistant` reads **`WEATHER_LOCATIONS`** (semicolon-separated `name:lat,lon` entries). Default: Barcelona and Sant Cugat del Vallès — same string in `compose.yaml`, `.env.example`, and the service fallback. The daily brief exposes `sections.weather.locations[]` with **now / rest-of-today / tomorrow** per place (Open-Meteo, `Europe/Madrid`) and one shared `sections.weather.narrative`.
 
+Optional **Google Calendar** OAuth in root `.env` fills `sections.agenda` (today + tomorrow, Madrid). Without creds the brief returns `sections.agenda_status: "unconfigured"` and still succeeds. Setup: [docs/google-calendar-agenda.md](docs/google-calendar-agenda.md).
+
 ## Starting / stopping
 
 ```bash
