@@ -42,7 +42,7 @@ docker compose config >/dev/null && echo OK
 |-----------|--------|
 | 0 Upstream review | done |
 | 1 Repository + compose | done |
-| 2 Paperclip | done (`http://localhost:3100`) |
+| 2 Paperclip | done (`http://localhost:3100`, alias `https://paperclip.helm.localhost`) |
 | 3 Hermes | done (`127.0.0.1:8642`) |
 | 4 Decider | done (`scripts/smoke-decider.sh`) |
 | 5 Decision gateway | done (`scripts/smoke-decision.sh`) |

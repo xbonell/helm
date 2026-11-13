@@ -52,7 +52,7 @@ Copy from `.env.example`. Required before `compose up`:
 | `HERMES_API_SERVER_KEY` | Hermes OpenAI-compatible API auth (≥8 chars) |
 | `PAPERCLIP_DEPLOYMENT_MODE` | `authenticated` for Docker (`local_trusted` is loopback-only) |
 | `PAPERCLIP_BIND` | `lan` so the container can listen on `0.0.0.0` |
-| `PAPERCLIP_ALLOWED_HOSTNAMES` | Docker DNS hosts Paperclip accepts (default `paperclip,localhost,127.0.0.1`) |
+| `PAPERCLIP_ALLOWED_HOSTNAMES` | Hosts Paperclip accepts: Docker DNS + loopback (compose default `paperclip,localhost,127.0.0.1`); `.env.example` also adds `paperclip.helm.localhost` for the local alias |
 
 Optional: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `DECIDER_MODEL`, `DECIDER_DEVICE`, ports — see `.env.example`.
 
@@ -150,14 +150,16 @@ docker compose up -d
 
 ## Service ports (development)
 
-| Port | Binding | Service |
-|------|---------|---------|
-| 3100 | all interfaces | Paperclip UI/API |
-| 8642 | `127.0.0.1` | Hermes API |
-| 8081 | `127.0.0.1` | Decision gateway |
-| 8082 | `127.0.0.1` | Model router |
-| 8083 | `127.0.0.1` | Personal assistant |
-| 8000 | internal Docker network only | Decider |
+| Port | Binding | Service | Local alias |
+|------|---------|---------|-------------|
+| 3100 | all interfaces | Paperclip UI/API | `https://paperclip.helm.localhost` |
+| 8642 | `127.0.0.1` | Hermes API | `https://hermes.helm.localhost` |
+| 8081 | `127.0.0.1` | Decision gateway | `https://decision-gateway.helm.localhost` |
+| 8082 | `127.0.0.1` | Model router | `https://model-router.helm.localhost` |
+| 8083 | `127.0.0.1` | Personal assistant | `https://personal-assistant.helm.localhost` |
+| 8000 | internal Docker network only | Decider | — |
+
+Aliases are optional, created outside this repo with `dev-setup integrate` (Portless proxy → host port; list with `dev-setup urls`). They target the default ports above, so changing a `*_PORT` in `.env` breaks the matching alias. Paperclip rejects unknown hosts with 403: keep `paperclip.helm.localhost` in `PAPERCLIP_ALLOWED_HOSTNAMES`. FastAPI services have no `/` route (404); use `/health`. Scripts keep using `127.0.0.1:<port>`.
 
 ## Troubleshooting
 
