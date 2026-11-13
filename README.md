@@ -52,6 +52,7 @@ Copy from `.env.example`. Required before `compose up`:
 | `HERMES_API_SERVER_KEY` | Hermes OpenAI-compatible API auth (≥8 chars) |
 | `PAPERCLIP_DEPLOYMENT_MODE` | `authenticated` for Docker (`local_trusted` is loopback-only) |
 | `PAPERCLIP_BIND` | `lan` so the container can listen on `0.0.0.0` |
+| `PAPERCLIP_PUBLIC_URL` | Base URL Paperclip uses in links it generates (compose default `http://localhost:3100`; `.env.example` uses the alias `https://paperclip.helm.localhost`). Both URLs still work. |
 | `PAPERCLIP_ALLOWED_HOSTNAMES` | Hosts Paperclip accepts: Docker DNS + loopback (compose default `paperclip,localhost,127.0.0.1`); `.env.example` also adds `paperclip.helm.localhost` for the local alias |
 
 Optional: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `DECIDER_MODEL`, `DECIDER_DEVICE`, ports — see `.env.example`.
