@@ -102,8 +102,13 @@ Shipped as an M5 milestone in that repo; Helm depends on all three.
 - Authentication is whatever the CLI finds in its environment. The adapter passes no key and never reads or logs the token. Intended use is `CLAUDE_CODE_OAUTH_TOKEN`; an `ANTHROPIC_API_KEY` also works for anyone who prefers metered billing.
 - Must **not** pass `--bare` when the host selects subscription auth: bare mode never reads OAuth credentials.
 - Takes an explicit environment for the subprocess instead of inheriting the parent's. The host passes only what the agent needs: `PATH`, `HOME`, the one Claude credential in use, and any proxy variables (`HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`).
-- Takes an optional launcher prefix (for example `["sudo", "-n", "-u", "agent", "--"]`) so the host can run the agent as a different Unix user. Variables are passed through the launcher explicitly, never by preserving the parent environment.
-- Takes a wall-clock `timeoutSeconds`. On expiry the adapter kills the agent's whole process group (`SIGTERM`, then `SIGKILL`) and reports `failed`.
+- Takes an optional launcher prefix (for example `["sudo", "-n", "-u", "agent", "/usr/local/bin/run-agent"]`) so the host can run the agent as a different Unix user. With a launcher set, the adapter invokes `<launcher...> <timeoutSeconds> <claude flags...>` and the launcher is responsible for starting `claude`. Variables are passed through the launcher explicitly, never by preserving the parent environment.
+- Takes a wall-clock `timeoutSeconds`. How it is enforced depends on whether a launcher is set:
+  - **No launcher (agent runs as the adapter's own user).** The adapter starts the agent in its own process group and on expiry signals the group (`SIGTERM`, then `SIGKILL` after a grace period).
+  - **With a launcher (agent runs as another user).** The adapter cannot signal the agent: an unprivileged process may not signal another user's processes, and `SIGKILL` sent to the launcher is not relayed. Enforcement is therefore the host's job, inside the agent user's own process tree. The adapter passes `timeoutSeconds` to the launcher and treats the conventional exit codes `124` (timed out) and `137` (killed) as a timeout.
+- Takes an optional `reaper` command, run after every agent exit and when the backstop below fires. The host uses it to kill anything the agent left running. Its failure is logged and never changes the run's result.
+- Keeps a backstop timer of `timeoutSeconds` plus a grace period in both cases. If the agent process has not exited by then, the adapter runs the `reaper`, stops waiting, and reports `failed`.
+- In every case a timeout is reported as `failed`.
 - After cloning with the tokenized URL, the shared run flow resets the clone's remote to the tokenless URL before the agent starts, so the GitHub token is not readable from `.git/config`. This applies to every adapter.
 - Default invocation:
 
@@ -118,7 +123,7 @@ Shipped as an M5 milestone in that repo; Helm depends on all three.
   ```
 
 - `bypassPermissions` is the only mode that lets the agent run the project's own build and test commands without prompts. It is acceptable only under the host conditions listed in Helm's Security section; the adapter's README states them, and the CLI itself refuses this mode when run as root.
-- Options exposed to the host: `maxTurns`, `disallowedTools`, `timeoutSeconds`, `launcher`, and `maxBudgetUsd` (maps to `--max-budget-usd`; meaningful only with API-key auth).
+- Options exposed to the host: `maxTurns`, `disallowedTools`, `timeoutSeconds`, `launcher`, `reaper`, and `maxBudgetUsd` (maps to `--max-budget-usd`; meaningful only with API-key auth).
 - The JSON result is used only to tell success from a run error. The patch still comes from the git diff.
 - `doctor` gains a check that `claude` is on `PATH` and can authenticate.
 - Result mapping:
@@ -141,7 +146,16 @@ Shipped as an M5 milestone in that repo; Helm depends on all three.
 
 Node service that imports the pinned Unimatrix build and runs the watch loop in-process. Its image also installs the Claude Code CLI at a pinned version.
 
-The image has two non-root users. The service runs as `worker`, which owns the secrets and the pristine clones. The agent runs as `agent`, launched through a single `sudo` rule that lets `worker` run the `claude` binary as `agent` and nothing else. `agent` can write only to its per-run copy of the clone and its own `HOME`.
+The image has two non-root users. The service runs as `worker`, which owns the secrets and the pristine clones. The agent runs as `agent`. `agent` can write only to its per-run copy of the clone and its own `HOME`.
+
+`worker` cannot signal `agent`'s processes, so starting and stopping the agent both go through `sudo`. Exactly two rules exist, each letting `worker` run one fixed script as `agent` and nothing else. Both scripts are owned by root and writable by neither user:
+
+| Script | Arguments | What it does |
+|--------|-----------|--------------|
+| `/usr/local/bin/run-agent` | `<seconds> <claude flags...>` | Execs `timeout --signal=TERM --kill-after=10 <seconds> claude <flags...>`. `timeout` runs as `agent`, so it can signal the agent; it places the command in its own process group and signals the whole group. Rejects a non-numeric first argument. The binary is always `claude`; the caller chooses only its flags. |
+| `/usr/local/bin/reap-agent` | none | Sends `SIGKILL` to every process owned by `agent`. Catches processes that left the process group (for example a build tool that daemonises). Safe because only one run is active at a time. |
+
+`dev-worker` passes `run-agent` as the adapter's `launcher` and `reap-agent` as its `reaper`, so the reaper runs after every run and when the adapter's backstop timer fires. The worker also runs `reap-agent` once at startup, in case a previous container process died mid-run.
 
 All endpoints except `/health` require `Authorization: Bearer $DEV_WORKER_API_KEY`; a missing or wrong key returns `401`. Hermes and `personal-assistant` receive the key from compose. The agent does not.
 
@@ -296,9 +310,9 @@ Each allowlisted repo needs the `unimatrix-mechanical` workflow installed and th
 - The worker's API requires a bearer key the agent does not have, so the agent cannot publish work units through `localhost:8084`.
 - The request cannot weaken a repo's validation mode or supply checks, so neither a misread Telegram message nor another container can remove the review gate or choose the command CI runs.
 - The agent runs in `bypassPermissions` mode, so three host conditions are mandatory:
-  - **Non-root.** Both users in the image are non-root (the CLI refuses bypass mode as root), and the `sudo` rule allows only `worker` → `agent` for the `claude` binary.
+  - **Non-root.** Both users in the image are non-root (the CLI refuses bypass mode as root), and the two `sudo` rules allow only `worker` → `agent`, for the fixed `run-agent` and `reap-agent` scripts. Neither rule gives `worker` anything it could not already do, since `worker` is the more privileged of the two users.
   - **Egress allowlist.** `dev-worker` is attached only to the internal `helm-dev` network and reaches the internet through `dev-egress-proxy`. Built-in hosts: `api.anthropic.com`, `github.com`, `api.github.com`, `api.telegram.org` and `registry.npmjs.org`; `DEV_WORKER_EGRESS_ALLOW` adds registries a repo needs. Everything else is refused, which limits what a prompt-injected agent could send out.
-  - **Bounded runs.** A wall-clock timeout that kills the agent's process group, `--max-turns`, no web fetch or search tools, and no session persistence.
+  - **Bounded runs.** A wall-clock timeout enforced as the `agent` user by `run-agent`, a reaper that kills any leftover `agent` processes after every run, `--max-turns`, no web fetch or search tools, and no session persistence.
 - The allowlist reduces but does not remove exfiltration risk: the agent can still reach GitHub and Telegram hosts through the proxy, can reach Hermes and `personal-assistant` on `helm-dev` (Hermes' API needs a key the agent lacks), and holds its own Claude credential. That is the accepted residual risk for unattended runs on the operator's own repos.
 - The machine-account PAT is scoped to the allowlisted repos only. It cannot approve its own PRs, so `both` and `human` modes always need the operator.
 - Instructions arriving over Telegram are limited by Hermes' existing `TELEGRAM_ALLOWED_USERS` allowlist.
@@ -317,9 +331,9 @@ Each allowlisted repo needs the `unimatrix-mechanical` workflow installed and th
 
 | # | Repo | Deliverable | Done when |
 |---|------|-------------|-----------|
-| 1 | unimatrix | Adapter selection, isolated work tree mode + `adapter-claude-code` | `claim-run-submit --adapter claude-code` opens a PR with no Cursor installed and no API key set; a hook planted in the agent's copy does not run |
+| 1 | unimatrix | Adapter selection, isolated work tree mode + `adapter-claude-code` | `claim-run-submit --adapter claude-code` opens a PR with no Cursor installed and no API key set; a hook planted in the agent's copy does not run; a launcher exit code of `124` is reported as a timeout and the reaper is invoked |
 | 2 | unimatrix | `watch` | A published unit is picked up and submitted with no further commands |
-| 3 | helm | `dev-worker` service with `helm-dev` network, egress proxy, API key, config, healthcheck, smoke script | `POST /v1/work-units` on a test repo ends in an open PR with a passing mechanical check; a request to a non-allowlisted host from inside the container is refused |
+| 3 | helm | `dev-worker` service with `helm-dev` network, egress proxy, API key, config, healthcheck, smoke script | `POST /v1/work-units` on a test repo ends in an open PR with a passing mechanical check; a request to a non-allowlisted host from inside the container is refused; a run that sleeps past the timeout is killed and leaves no `agent` processes |
 | 4 | helm | Hermes planner skill + Telegram notifications | A Telegram message produces a PR link reply |
 | 5 | helm | `sections.dev` in the daily brief | Brief lists a PR awaiting review; brief still succeeds with `dev-worker` stopped |
 
@@ -346,4 +360,5 @@ These do not block the design but should be done before or during implementation
 4. **Flag names at the pinned version.** The flags above are from the Claude Code docs as of 2026-11-13; re-check them when `CLAUDE_CODE_VERSION` is chosen, along with reading the prompt from stdin.
 5. **Transient-error detection.** Confirm how the pinned CLI reports a usage limit and its reset time in `--output-format json`, so the adapter can tell it from a real run failure.
 6. **Agent tooling as a second user.** Confirm the repo's build and test commands work as `agent` in the copied work tree (file ownership, package-manager caches under the agent's `HOME`).
+7. **Timeout behaviour in the image.** Confirm the base image ships GNU `timeout` (BusyBox's takes different options), that the instructions on stdin reach `claude` through `sudo` and `timeout`, and that a run which ignores `SIGTERM` or daemonises a child is fully gone after `reap-agent`.
 
