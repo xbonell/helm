@@ -142,7 +142,7 @@ Shipped as an M5 milestone in that repo; Helm depends on all three.
 - Each tick: list open issues labelled `unimatrix`, reconstruct the snapshot, filter by capability match and availability, then run claim → run → submit for at most one unit at a time.
 - Emits structured events (claimed, submitted with PR number, released with reason, failed with reason) so a host process can forward them.
 - Takes an optional host callback that is asked before each claim and can decline it. Helm uses it for the daily cap and the usage-limit pause.
-- On start, releases any assignment the client still holds from a previous process. Watch mode runs one unit at a time, so anything it holds at start-up is orphaned; releasing it avoids waiting out the lease.
+- On start, releases any `leased` or `running` assignment the client still holds from a previous process. Watch mode runs one unit at a time, so anything it holds at start-up is orphaned. Left alone, it would block the unit until the lease ran out and then count as `expired`, which consumes an attempt; `released` does not. The existing pieces cover this: the protocol allows `leased` and `running` → `released`, and a client can already rewrite its own assignment comment (`patchOwnAssignment`).
 - Stops claiming and returns an error to the host after an unsafe result or a launcher failure, instead of moving on to the next unit.
 - Lease expiry and claim races are already handled by the provider; watch mode itself adds no new state. Any state behind the callback belongs to the host.
 
@@ -383,5 +383,4 @@ These do not block the design but should be done before or during implementation
 5. **Transient-error detection.** Confirm how the pinned CLI reports a usage limit and its reset time in `--output-format json`, so the adapter can tell it from a real run failure.
 6. **Agent tooling as a second user.** Confirm the repo's build and test commands work as `agent` in the copied work tree (file ownership, package-manager caches under the agent's `HOME`).
 7. **Launcher tooling in the image.** Confirm the base image ships GNU `timeout` (BusyBox's takes different options) and `setpriv`, and that the instructions on stdin reach `claude` through `sudo`, `timeout` and `setpriv`. The kill and reap behaviour itself is part of milestone 3's "done when".
-8. **Releasing a held assignment.** Confirm the GitHub Lite provider lets the assignee release its own `running` assignment, which watch mode's start-up release depends on.
 
