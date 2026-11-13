@@ -30,7 +30,7 @@ The target experience:
 | Source of truth for dev work | **GitHub** (Unimatrix Lite: issues, PRs, checks) | Already built and auditable; avoids coupling to Paperclip's data model |
 | Paperclip's role | Trigger only (routines); no Paperclip issues or comments for dev work | Same pattern as the daily brief, minus issue comments, which would wake the Hermes agent |
 | Where the worker runs | New Compose service **`dev-worker`** (Node 24) | Needs `@unimatrix/*` packages; matches Helm's one-service-per-capability layout |
-| How Helm gets Unimatrix | Docker build from a **pinned git SHA** of `xbonell/unimatrix` | Not published to npm; pin keeps protocol `0.x` breaking changes deliberate |
+| How Helm gets Unimatrix | Docker build from a **pinned git SHA** of `xbonell/unimatrix`, fetched on the host into a gitignored checkout and passed to the build as an extra context | Not published to npm; pin keeps protocol `0.x` breaking changes deliberate; the repo is private, and a host checkout keeps a GitHub token out of the image build |
 | Headless adapter | New **`@unimatrix/adapter-claude-code`** that shells out to the unmodified Claude Code CLI (`claude -p`) | Runs on the operator's Claude subscription with no metered API key; Cursor local SDK does not suit a server |
 | Model credential for coding | **`CLAUDE_CODE_OAUTH_TOKEN`** from `claude setup-token` (one-year token) | Documented path for scripts and CI on a subscription; the Agent SDK is documented as API-key only |
 | Coding auth fallback | Explicit switch **`DEV_WORKER_AUTH=subscription\|api_key`**, default `subscription` | Moving to an Anthropic API key is a config change, whether because of volume, terms, or the CLI's bare-mode default changing |
@@ -41,10 +41,12 @@ The target experience:
 | Worker API auth | **Bearer key** (`DEV_WORKER_API_KEY`) on every endpoint except `/health` | Stops the agent, or any other container, from publishing work units |
 | Paperclip and dev work | Work units are **never mirrored** as Paperclip issues; Hermes agent keeps timer heartbeat off, wake on demand on | Paperclip has its own task checkout, and any assignment or comment on a Paperclip task wakes the agent |
 | Notifications | `dev-worker` calls the **Telegram API directly** | Fixed event messages need no model call and should not be paraphrased |
-| Agent isolation | Agent runs as a **separate Unix user** with a scrubbed environment, in a **copy** of the clone; the worker diffs and pushes from its own pristine clone | The agent runs model-chosen shell commands next to the GitHub and Telegram tokens; a scrubbed environment alone leaves `/proc/<pid>/environ` and git hooks open |
+| Agent isolation | Agent runs as a **separate Unix user** with a scrubbed environment, in a **copy** of the clone; the worker diffs from its own pristine clone and pushes from a fresh one | The agent runs model-chosen shell commands next to the GitHub and Telegram tokens; a scrubbed environment alone leaves `/proc/<pid>/environ` and git hooks open |
 | Mechanical-only validation | **Per-repo opt-in** in the allowlist; a request can add gates but never remove them | Lets low-risk repos skip the review gate without weakening the default |
 | Worker identity | A **dedicated GitHub machine account** PAT for assignee actions | GitHub Lite human validation needs an `APPROVED` review from someone who is neither PR author nor assignee, so the operator cannot be both worker and reviewer |
-| Authority identity | Existing optional **GitHub App** env for `publish` / `record-outcome` | Already supported in M4 |
+| Authority identity | A **GitHub App**, required, for `publish` and `record-outcome` | Unimatrix refuses to let the assignee record validation, so the machine account cannot do it; App tokens for the authority role are already supported in M4 |
+| Recording outcomes | Actions records `mechanical` units; **`dev-worker` records `both` and `human` units** | The Actions recorder only handles `mechanical` mode; the other two need an authority to run `record-outcome` after the review |
+| Mechanical checks in target repos | A **portable workflow** that loads the runner from `xbonell/unimatrix` at a pinned SHA | The existing workflow builds the runner from the PR's own base, which only works inside the Unimatrix repo; elsewhere it exits green without running anything |
 | Default validation mode | **`both`** (mechanical, then human) | Unattended agents on the operator's own repos; nothing merges without a review |
 | Planner | **Hermes** builds the request; `dev-worker` builds and hashes the `WorkUnit` | Keeps schema and hashing in TypeScript next to the protocol; Hermes only sends plain fields |
 | Repo scope | **Allowlist** in `config/dev-worker/repos.yaml` with per-repo default checks | Prevents a mis-parsed message from publishing work to an arbitrary repo |
@@ -61,6 +63,7 @@ flowchart TD
     W -->|publish, claim, submit| GH[GitHub issue + PR]
     W -->|run| A[adapter-claude-code in temp clone]
     GH --> CI[Actions: unimatrix-mechanical + record-outcome]
+    W -->|record-outcome for both and human| GH
     U -->|PR review| GH
     W -->|event messages| TG[Telegram API]
     W -.->|all egress| X[dev-egress-proxy]
@@ -84,14 +87,14 @@ Coupling rules (additions to `docs/architecture.md`):
 
 ## Changes in Unimatrix
 
-Shipped as an M5 milestone in that repo; Helm depends on all three.
+Shipped as an M5 milestone in that repo; Helm depends on all four. The claims below about current behaviour were checked against `xbonell/unimatrix` at `fedf4e3`.
 
 ### 1. Adapter selection and shared run flow
 
-- Extract the adapter-neutral part of `runCursorWork` (clone → `startSha` → prompt → `git add -A` → binary cached diff) so adapters only supply a prompt function. The existing shape `{ cwd, instructions, apiKey }` changes so that `apiKey` is optional: each adapter resolves its own credential.
+- Extract the adapter-neutral part of `runCursorWork` (clone → `startSha` → prompt → `git add -A` → binary cached diff) so adapters only supply a prompt function. The flow lives in `adapter-cursor` today; it moves to a new package that both adapters import, which keeps the rule that providers and adapters do not import each other. The existing shape `{ cwd, instructions, apiKey }` changes so that `apiKey` is optional: each adapter resolves its own credential.
 - The shared flow gains an optional **isolated work tree** mode, which Helm turns on:
   - The clone stays in a directory the agent cannot write to. The agent gets a copy of it (with its own `.git`, tokenless remote) as `cwd`.
-  - After the agent exits, the flow never runs git inside the agent's copy. It computes the patch with the pristine clone's git directory pointed at the agent's work tree (`--git-dir` / `--work-tree`), with hooks and `core.fsmonitor` disabled, then applies the patch to the pristine clone and pushes from there.
+  - After the agent exits, the flow never runs git inside the agent's copy. It computes the patch with the pristine clone's git directory pointed at the agent's work tree (`--git-dir` / `--work-tree`), with hooks and `core.fsmonitor` disabled. Pushing needs no change: `submit` already clones the base branch afresh, applies the patch there and pushes (`createTokenizedGitPush`).
   - Anything the agent wrote under its own `.git` (hooks, config, credential helpers) is therefore never executed or read by the token-holding process.
 - CLI and library entry points take an adapter id (`--adapter cursor|claude-code`, default `cursor`) instead of hard-wiring `createSdkPrompt` and `CURSOR_API_KEY` in `apps/cli/src/github-flow.ts`. `CURSOR_API_KEY` is required only when the Cursor adapter is selected.
 - Capability strings: `adapter:cursor`, `adapter:claude-code`. A client advertises the adapters it has configured.
@@ -139,6 +142,7 @@ Shipped as an M5 milestone in that repo; Helm depends on all three.
 ### 3. Watch mode
 
 - Library function plus CLI command `watch --repo owner/name [--repo ...] --adapter claude-code --interval 60`.
+- Needs one addition to `GitHubClient`: listing a repo's open issues by label. Today the client can only fetch an issue by number.
 - Each tick: list open issues labelled `unimatrix`, reconstruct the snapshot, filter by capability match and availability, then run claim → run → submit for at most one unit at a time.
 - Emits structured events (claimed, submitted with PR number, released with reason, failed with reason) so a host process can forward them.
 - Takes an optional host callback that is asked before each claim and can decline it. Helm uses it for the daily cap and the usage-limit pause.
@@ -146,11 +150,28 @@ Shipped as an M5 milestone in that repo; Helm depends on all three.
 - Stops claiming and returns an error to the host after an unsafe result or a launcher failure, instead of moving on to the next unit.
 - Lease expiry and claim races are already handled by the provider; watch mode itself adds no new state. Any state behind the callback belongs to the host.
 
+### 4. Portable mechanical workflow
+
+Today `.github/workflows/unimatrix-mechanical.yml` checks out the PR's base commit and builds `provider-github` from it. That is only possible when the repository is Unimatrix itself. In any other repository the runner entry point is missing, so the job takes its "base bootstrap" branch: it exits `0` without running a check and the record job is skipped. The check is green, and a later `record-outcome` would record a mechanical pass for checks that never ran.
+
+- Add a workflow template for target repositories. It checks out `xbonell/unimatrix` at a pinned SHA as the trusted runner and recorder, in place of the PR base. The PR tree stays the untrusted working directory, as now.
+- In the template, a missing runner entry point is a **failure**. The exit-`0` bootstrap branch stays only in Unimatrix's own workflow.
+- While `xbonell/unimatrix` is private, the template reads it with a read-only credential stored as a repository secret (`UNIMATRIX_READ_TOKEN`). The secret is passed only to that checkout step, with `persist-credentials: false`, so the PR's own commands never see it.
+- The job names stay `unimatrix-mechanical` and `unimatrix-record-outcome`, so `record-outcome`'s default check name still matches.
+
 ## Changes in Helm
 
 ### 1. `services/dev-worker`
 
 Node service that imports the pinned Unimatrix build and runs the watch loop in-process. Its image also installs the Claude Code CLI at a pinned version.
+
+`xbonell/unimatrix` is private, so the image build cannot clone it without a credential. A new `scripts/fetch-unimatrix.sh` (called by `scripts/bootstrap.sh`) uses the operator's own git access to check out `UNIMATRIX_REF` into a gitignored `vendor/unimatrix`, and compose passes that directory to the build as an additional context. No GitHub token enters the build or the image.
+
+Besides the watch loop, the worker runs an **outcome recorder** on each tick. The watch loop acts as the assignee (machine-account PAT); the recorder acts as the authority (GitHub App):
+
+- For every unit in `submitted` whose mode is `both` or `human`, it calls `record-outcome`. In `both` mode this records the mechanical outcome once the check has finished, then the human outcome once the PR has a qualifying approval. "Check pending" and "review pending" are normal and are retried on the next tick.
+- `mechanical` units are left to the Actions recorder.
+- A human rejection is not detected automatically. A unit stays `awaiting_review` until the operator approves the PR, records a failure with the CLI (`record-outcome --phase human --verdict fail`), or closes the issue.
 
 The image has two non-root users. The service runs as `worker`, which owns the secrets and the pristine clones. The agent runs as `agent`. `agent` can write only to its per-run copy of the clone and its own `HOME`.
 
@@ -228,7 +249,7 @@ All endpoints except `/health` require `Authorization: Bearer $DEV_WORKER_API_KE
 
 `state` is one of `queued`, `running`, `awaiting_checks`, `awaiting_review`, `validated`, `rejected`, `failed`, derived from the assignment status and recorded outcomes.
 
-Status and error rules follow the calendar pattern: missing GitHub or model credentials → `status: "unconfigured"` with an empty list; GitHub failure → `status: "error"` plus a short safe `error` string with no tokens.
+Status and error rules follow the calendar pattern: missing GitHub (PAT or App) or model credentials → `status: "unconfigured"` with an empty list; GitHub failure → `status: "error"` plus a short safe `error` string with no tokens.
 
 ### 2. Notifications
 
@@ -264,9 +285,9 @@ The skill does not call Decider. The Decider `development` candidate stays unhan
 |----------|---------|---------|
 | `DEV_WORKER_PORT` | dev-worker | Default `8084`; reachable only on the `helm-dev` network, not published on the host |
 | `DEV_WORKER_API_KEY` | dev-worker, hermes, personal-assistant | Bearer key for the worker's API; required for compose, generated by `scripts/bootstrap.sh` |
-| `UNIMATRIX_REF` | dev-worker build | Git SHA of `xbonell/unimatrix` to build |
+| `UNIMATRIX_REF` | fetch script, dev-worker build | Git SHA of `xbonell/unimatrix` to check out into `vendor/unimatrix` and build |
 | `GITHUB_TOKEN` | dev-worker | Machine-account PAT for claim, push and PR |
-| `UNIMATRIX_GITHUB_APP_ID`, `UNIMATRIX_GITHUB_APP_INSTALLATION_ID`, `UNIMATRIX_GITHUB_APP_PRIVATE_KEY` | dev-worker | Authority for publish and outcome recording |
+| `UNIMATRIX_GITHUB_APP_ID`, `UNIMATRIX_GITHUB_APP_INSTALLATION_ID`, `UNIMATRIX_GITHUB_APP_PRIVATE_KEY` | dev-worker | Authority for publish and outcome recording; required. The App must be installed on every allowlisted repo |
 | `CLAUDE_CODE_OAUTH_TOKEN` | dev-worker | Subscription token for the Claude Code CLI, generated once with `claude setup-token` on the operator's machine; expires after one year |
 | `CLAUDE_CODE_OAUTH_TOKEN_ISSUED` | healthcheck script | Date the token was generated (`YYYY-MM-DD`), used for the expiry warning |
 | `CLAUDE_CODE_VERSION` | dev-worker build | Claude Code CLI version to install |
@@ -317,7 +338,7 @@ repos:
         params: { command: pnpm, args: [test] }
 ```
 
-Each allowlisted repo needs the `unimatrix-mechanical` workflow installed and the machine account added as a collaborator. `scripts/healthcheck.sh` gains a "Dev worker" line, probed with `docker compose exec` as for Decider; a new `scripts/smoke-dev-worker.sh` runs `doctor` against each allowlisted repo, with the same launcher and reaper the service uses.
+Each allowlisted repo needs four things: the portable `unimatrix-mechanical` workflow on its default branch, the `UNIMATRIX_READ_TOKEN` secret, the GitHub App installed, and the machine account added as a collaborator. The smoke script checks the first, third and fourth. `scripts/healthcheck.sh` gains a "Dev worker" line, probed with `docker compose exec` as for Decider; a new `scripts/smoke-dev-worker.sh` runs `doctor` against each allowlisted repo, with the same launcher and reaper the service uses.
 
 ## Security
 
@@ -328,7 +349,7 @@ Each allowlisted repo needs the `unimatrix-mechanical` workflow installed and th
 - Inside the container, the agent is isolated from the worker's own secrets in three ways:
   - **Separate user.** The agent runs as `agent`, the service as `worker`. A different UID cannot read the worker's `/proc/<pid>/environ` or memory, its state file, or the pristine clones.
   - **Scrubbed environment.** The agent's environment holds only its Claude credential, `PATH`, `HOME` and the proxy variables.
-  - **No git in agent-written directories.** The agent works in a copy of the clone with a tokenless remote. The worker computes the diff from its own git directory with hooks and `core.fsmonitor` disabled, and pushes from the pristine clone, so hooks or git config planted by the agent never run in the token-holding process. Pushing and PR creation happen after the agent has exited.
+  - **No git in agent-written directories.** The agent works in a copy of the clone with a tokenless remote. The worker computes the diff from its own git directory with hooks and `core.fsmonitor` disabled, and pushes from a fresh clone, so hooks or git config planted by the agent never run in the token-holding process. Pushing and PR creation happen after the agent has exited.
 - The worker's API requires a bearer key the agent does not have, so the agent cannot publish work units through `localhost:8084`.
 - The request cannot weaken a repo's validation mode or supply checks, so neither a misread Telegram message nor another container can remove the review gate or choose the command CI runs.
 - The agent runs in `bypassPermissions` mode, so three host conditions are mandatory:
@@ -337,6 +358,8 @@ Each allowlisted repo needs the `unimatrix-mechanical` workflow installed and th
   - **Bounded runs.** A wall-clock timeout and a reaper that both run as root, so the agent cannot stop, kill or outlive them; the reaper clears leftover `agent` processes after every run, and the worker restarts the container if it cannot. Also `--max-turns`, a `pids_limit`, no web fetch or search tools, and no session persistence.
 - The allowlist reduces but does not remove exfiltration risk: the agent can still reach GitHub and Telegram hosts through the proxy, can reach Hermes and `personal-assistant` on `helm-dev` (Hermes' API needs a key the agent lacks), and holds its own Claude credential. That is the accepted residual risk for unattended runs on the operator's own repos.
 - The machine-account PAT is scoped to the allowlisted repos only. It cannot approve its own PRs, so `both` and `human` modes always need the operator.
+- The PAT is a fine-grained token **without** the Workflows permission. `pull_request` runs use the workflow file from the PR itself, so an agent that could push a change under `.github/workflows` could rewrite its own mechanical check. Without that permission GitHub rejects the push and the unit fails.
+- The agent cannot record validation. Outcomes are written by Actions or by the worker's App identity, and Unimatrix rejects an outcome from the assignee.
 - Instructions arriving over Telegram are limited by Hermes' existing `TELEGRAM_ALLOWED_USERS` allowlist.
 - Tokens are redacted from errors and never written to issues, comments or Telegram (existing `redactSecret` behaviour).
 
@@ -354,8 +377,8 @@ Each allowlisted repo needs the `unimatrix-mechanical` workflow installed and th
 | # | Repo | Deliverable | Done when |
 |---|------|-------------|-----------|
 | 1 | unimatrix | Adapter selection, isolated work tree mode + `adapter-claude-code` | `claim-run-submit --adapter claude-code` opens a PR with no Cursor installed and no API key set; a hook planted in the agent's copy does not run; with a fake launcher, exit `124` is reported as a timeout, exit `125` releases the unit without using an attempt, a launcher that never exits triggers the backstop and an unsafe result, and the reaper runs exactly once in each case |
-| 2 | unimatrix | `watch` | A published unit is picked up and submitted with no further commands |
-| 3 | helm | `dev-worker` service with `helm-dev` network, egress proxy, API key, config, healthcheck, smoke script | `POST /v1/work-units` on a test repo ends in an open PR with a passing mechanical check; a request to a non-allowlisted host from inside the container is refused; `doctor` passes through the launcher; a run that ignores `SIGTERM` past the timeout is killed and reported as a timeout; a child started with `setsid` is gone after the run; as `agent`, signalling the `timeout` or `reap-agent` process fails with a permission error |
+| 2 | unimatrix | `watch`, issue listing, portable mechanical workflow | A published unit is picked up and submitted with no further commands; in a repository other than Unimatrix, a PR with a failing check command gets a failed `unimatrix-mechanical` check, and a missing runner fails the job |
+| 3 | helm | `dev-worker` service with `helm-dev` network, egress proxy, API key, config, healthcheck, smoke script | `POST /v1/work-units` on a test repo ends in an open PR with a passing mechanical check, and after the operator approves it the unit reaches `validated` with no manual command; a request to a non-allowlisted host from inside the container is refused; `doctor` passes through the launcher; a run that ignores `SIGTERM` past the timeout is killed and reported as a timeout; a child started with `setsid` is gone after the run; as `agent`, signalling the `timeout` or `reap-agent` process fails with a permission error |
 | 4 | helm | Hermes planner skill + Telegram notifications | A Telegram message produces a PR link reply |
 | 5 | helm | `sections.dev` in the daily brief | Brief lists a PR awaiting review; brief still succeeds with `dev-worker` stopped |
 
@@ -369,7 +392,7 @@ Each allowlisted repo needs the `unimatrix-mechanical` workflow installed and th
 | Model for Hermes | Operator's OpenAI key with `gpt-6-luna`, also for `model-router` |
 | Paperclip conflict | None, provided dev work is never mirrored into Paperclip and the Hermes agent keeps timer heartbeat off |
 | CLI permission flags | `bypassPermissions` as a separate non-root user behind an egress allowlist, with time, turn and tool limits |
-| Machine account | Create one; `both` stays the default, mechanical-only is a per-repo opt-in |
+| Machine account | Create one, plus the GitHub App as authority; `both` stays the default, mechanical-only is a per-repo opt-in |
 | Notification path | Direct Telegram call from `dev-worker` |
 
 ## Remaining checks
@@ -383,4 +406,6 @@ These do not block the design but should be done before or during implementation
 5. **Transient-error detection.** Confirm how the pinned CLI reports a usage limit and its reset time in `--output-format json`, so the adapter can tell it from a real run failure.
 6. **Agent tooling as a second user.** Confirm the repo's build and test commands work as `agent` in the copied work tree (file ownership, package-manager caches under the agent's `HOME`).
 7. **Launcher tooling in the image.** Confirm the base image ships GNU `timeout` (BusyBox's takes different options) and `setpriv`, and that the instructions on stdin reach `claude` through `sudo`, `timeout` and `setpriv`. The kill and reap behaviour itself is part of milestone 3's "done when".
+8. **Workflows permission.** Confirm on a test repo that a push touching `.github/workflows` is rejected for the machine account's fine-grained token.
+9. **Unimatrix visibility.** Decide whether `xbonell/unimatrix` stays private. If it becomes public, the `UNIMATRIX_READ_TOKEN` secret and the host checkout are no longer needed.
 
