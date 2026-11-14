@@ -1,7 +1,7 @@
 # Helm × Unimatrix: software-development lane (design)
 
 **Date:** 2026-11-13
-**Status:** draft; open questions resolved in chat on 2026-11-13; awaiting spec file review before any implementation plan
+**Status:** superseded on 2026-11-14 by [2026-11-14-hosted-dev-lane-design.md](2026-11-14-hosted-dev-lane-design.md); never implemented. Kept for the reasoning. `xbonell/unimatrix` was archived the same day.
 **Repos touched:** `xbonell/helm` (this spec's home) and `xbonell/unimatrix`
 
 ## Goal
