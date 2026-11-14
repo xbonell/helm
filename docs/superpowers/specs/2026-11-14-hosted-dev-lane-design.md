@@ -31,7 +31,7 @@ What this gives up is stated under [Trade-offs](#trade-offs).
 | Who creates the issue | `personal-assistant`, with the **operator's fine-grained PAT** | The action rejects bot actors and users without write access by default; an operator-owned token passes both checks with no extra configuration |
 | Token placement | In `personal-assistant` only; **Hermes never holds it** | The model can ask for an issue but cannot reach GitHub directly or choose a repo outside the allowlist |
 | Source of truth | **GitHub** issues and PRs; nothing mirrored into Paperclip | Unchanged from the previous spec: a Paperclip assignment or comment wakes the Hermes agent |
-| Review gate | **Branch protection** on the default branch: PR required, CI must pass | Replaces Unimatrix validation modes with what GitHub already enforces |
+| Review gate | **Branch protection** on the default branch: PR required, CI must pass. **Not enforceable on private repos under the operator's current GitHub plan**; see [Open decision: review gate on private repos](#open-decision-review-gate-on-private-repos) | Replaces Unimatrix validation modes with what GitHub already enforces |
 | Notifications | Final **workflow step** calls the Telegram API | The action has no completion webhook; a step with `if: always()` reports success and failure |
 | Run bounds | Job `timeout-minutes: 30`, `--max-turns 50`, one run per repo at a time (`concurrency`) | Documented controls; no custom cap logic |
 | Unimatrix | **Not used.** `xbonell/unimatrix` archived on 2026-11-14 | Its trust model is not needed for one operator |
@@ -117,9 +117,9 @@ Per-repo setup, done once by the operator:
 2. Add the secrets `CLAUDE_CODE_OAUTH_TOKEN`, `HELM_TELEGRAM_BOT_TOKEN` and `HELM_TELEGRAM_CHAT_ID`.
 3. Copy the workflow and the notify script from `templates/`.
 4. Create the `helm-dev` label.
-5. Protect the default branch: require a PR and passing CI.
+5. Protect the default branch: require a PR and passing CI. Where GitHub refuses (private repo on a plan without branch protection), this step is skipped.
 
-`scripts/setup-dev-repo.sh <owner/name>` automates steps 3 to 5 with `gh`, and prints what is left for steps 1 and 2.
+`scripts/setup-dev-repo.sh <owner/name>` automates steps 3 to 5 with `gh`, and prints what is left for steps 1 and 2. When step 5 is refused it prints a clear warning that the repo has no enforced review gate, and still completes. It never changes a repo's visibility.
 
 ## Changes in Helm
 
@@ -204,7 +204,8 @@ MODEL_NAME=gpt-6-luna
 - **Who can start a run.** The action only runs for actors with write access and rejects bots unless listed in `allowed_bots`, which is left empty. On the operator's private repos that means the operator alone.
 - **Unauthenticated endpoint.** `POST /v1/dev-requests` has no auth, like the rest of `personal-assistant`. It is reachable from other containers on the `helm` network and from the host's loopback. Any of them could open an issue in an allowlisted repo. That is accepted: every service on that network is already trusted, and the result is still a PR the operator must review.
 - **Secrets on the runner.** The job sees the Claude subscription token and the Telegram token. A prompt-injected agent could try to send them out; the runner has open internet access. Issue text comes only from the operator, which keeps this risk low, but repo contents and dependencies are read by the agent too. This is the accepted residual risk, and the reason the spec applies only to the operator's own private repos.
-- **Nothing merges unreviewed.** Branch protection requires a PR and passing CI, and the operator merges by hand.
+- **Nothing merges unreviewed, where protection exists.** Branch protection requires a PR and passing CI, and the operator merges by hand.
+- **Unprotected private repos.** Without branch protection the gate is a convention, not a control. The job has `contents: write`, so nothing technically stops the agent from pushing to the default branch; only the prompt tells it to open a PR. Until the open decision below is settled, the dev lane is used on unprotected private repos only where a bad push to the default branch is harmless, which means no workflow that deploys or publishes on push.
 - **Subscription terms.** The action with a subscription token is a documented configuration. The token is "tied to the subscription of the person who ran `claude setup-token`", so it must not be shared with other people's repos.
 
 ## Trade-offs
@@ -238,11 +239,27 @@ What this design gives up compared with the Unimatrix dev lane:
 
 | # | Deliverable | Done when |
 |---|-------------|-----------|
-| 1 | Workflow template, notify script and `scripts/setup-dev-repo.sh`; no Helm service changes | Hand-labelling an issue in a test repo ends in an open PR with CI running on it and a Telegram message with the PR link |
+| 1 | Workflow template, notify script and `scripts/setup-dev-repo.sh`; no Helm service changes | Hand-labelling an issue in the test repo ends in an open PR with CI running on it and a Telegram message with the PR link; the agent made no direct push to the default branch |
 | 2 | `github_dev.py`, the two endpoints, config, smoke script, Hermes planner skill | A Telegram message produces an issue link reply, then a PR link message |
 | 3 | `sections.dev` in the daily brief | Brief lists a PR awaiting review; brief still succeeds with GitHub unreachable |
 
 Milestone 1 touches no Helm code and can be thrown away cheaply. If it fails on PR creation or CI triggering, the decision between the two designs is revisited before anything else is built.
+
+The test repo is `xbonell/helm-dev-lane-test`: private, plain Node.js 24 with no dependencies, one `CI` workflow that runs `npm test` on pull requests, no secrets and no deployment. It was created on 2026-11-14 for this milestone and can be deleted afterwards.
+
+## Open decision: review gate on private repos
+
+**Finding (2026-11-14).** On `xbonell/helm-dev-lane-test`, GitHub's branch protection API answered: "Upgrade to GitHub Pro or make this repository public to enable this feature." Under the operator's current plan the review gate in this spec cannot be enforced on private repos, which are the repos the spec is written for.
+
+| Option | Effect | Cost |
+|--------|--------|------|
+| Upgrade to GitHub Pro | Gate works as designed on private repos | Paid plan |
+| Accept an unenforced gate | Operator still reviews and merges by hand, but a direct push by the agent is possible | The gate depends on the prompt being followed |
+| Use the dev lane on public repos only | Protection is free there | Contradicts the private-repo assumption in Security: public logs, and outside content the agent may read |
+
+**Recommendation:** upgrade before using the dev lane on any private repo that matters. The unenforced gate is acceptable for the test repo and milestone 1 only.
+
+**Not decided.** Milestone 1 proceeds on the unprotected test repo and records whether the agent ever pushed to the default branch directly. The decision is needed before milestone 2 is used on a real repo. A narrower mitigation, giving the job less than `contents: write`, is not available: the agent needs it to push its own branch.
 
 ## Remaining checks
 
@@ -254,6 +271,8 @@ All of these are settled in milestone 1 unless noted.
 4. **PAT-authored events.** Confirm that an issue opened with the operator's fine-grained PAT passes the action's actor checks.
 5. **Run failure on usage limit.** See how the action reports a subscription usage limit, so the notify script can say so plainly.
 6. **Actions minutes.** Check the operator's GitHub plan allowance against an expected 10 to 30 minutes per run.
-7. **`gpt-6-luna` as planner.** Test on a handful of real requests in milestone 2.
+7. **Direct pushes.** On the unprotected test repo, confirm from the branch history that every agent run produced a branch and a PR, never a commit on the default branch.
+8. **Rulesets.** Check whether repository rulesets offer any protection for private repos on the current plan. If they do, `scripts/setup-dev-repo.sh` uses them where branch protection is refused.
+9. **`gpt-6-luna` as planner.** Test on a handful of real requests in milestone 2.
 
 Facts about the action and about cloud scheduled tasks in this spec come from Anthropic's documentation as read on 2026-11-14.
