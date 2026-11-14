@@ -87,6 +87,9 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@v6
+      - name: Record default branch
+        id: base
+        run: echo "sha=$(git ls-remote origin "refs/heads/${{ github.event.repository.default_branch }}" | cut -f1)" >> "$GITHUB_OUTPUT"
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -101,6 +104,8 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.HELM_TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.HELM_TELEGRAM_CHAT_ID }}
           GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          BASE_SHA: ${{ steps.base.outputs.sha }}
         run: ./.github/helm-dev-notify.sh "${{ job.status }}" "${{ github.event.issue.number }}"
 ```
 
@@ -109,6 +114,7 @@ Notes on the workflow:
 - **Auth.** No `github_token` input is passed, so the action authenticates as the Claude GitHub App. That is required for CI to run on the result: GitHub does not trigger workflows for commits made with the default `GITHUB_TOKEN`. The Claude GitHub App must be installed on the repo.
 - **PR creation.** By default the action commits to a branch and returns a link to the PR creation page instead of opening the PR. The prompt asks for a PR explicitly. If that proves unreliable, the fallback is a deterministic step that opens the PR from the branch using an App token. Which one is used is settled in milestone 1.
 - **Notify script.** `helm-dev-notify.sh` (also from the template) looks up the PR linked to the issue and sends one fixed-format message: PR link on success, workflow run link on failure. With the Telegram secrets unset it exits quietly.
+- **Default-branch check.** The workflow records the default branch's commit before the agent starts. The notify script compares it with the branch's commit at the end. If the branch moved during the run, the message leads with a warning and lists the new commits, whatever the job status. A push by the operator during the run triggers the same warning; the commit list shows which it was.
 - **Permission mode.** The action's default is auto mode, where a classifier reviews each action. That is kept. The docs describe it as "a review, not a boundary", which is acceptable on a throwaway runner whose only secrets are the Claude token and the Telegram token.
 
 Per-repo setup, done once by the operator:
@@ -118,8 +124,9 @@ Per-repo setup, done once by the operator:
 3. Copy the workflow and the notify script from `templates/`.
 4. Create the `helm-dev` label.
 5. Protect the default branch: require a PR and passing CI. Where GitHub refuses (private repo on a plan without branch protection), this step is skipped.
+6. In any workflow that deploys or publishes on push to the default branch, add a guard so it skips pushes made by the Claude GitHub App (`if: github.actor != '<the app's actor name>'` on the job). The operator does this by hand.
 
-`scripts/setup-dev-repo.sh <owner/name>` automates steps 3 to 5 with `gh`, and prints what is left for steps 1 and 2. When step 5 is refused it prints a clear warning that the repo has no enforced review gate, and still completes. It never changes a repo's visibility.
+`scripts/setup-dev-repo.sh <owner/name>` automates steps 3 to 5 with `gh`, and prints what is left for steps 1 and 2. When step 5 is refused it prints a clear warning that the repo has no enforced review gate, and still completes. It never changes a repo's visibility. It also lists the repo's workflows that run on push to the default branch and prints the guard from step 6 for each; it does not edit them.
 
 ## Changes in Helm
 
@@ -205,7 +212,11 @@ MODEL_NAME=gpt-6-luna
 - **Unauthenticated endpoint.** `POST /v1/dev-requests` has no auth, like the rest of `personal-assistant`. It is reachable from other containers on the `helm` network and from the host's loopback. Any of them could open an issue in an allowlisted repo. That is accepted: every service on that network is already trusted, and the result is still a PR the operator must review.
 - **Secrets on the runner.** The job sees the Claude subscription token and the Telegram token. A prompt-injected agent could try to send them out; the runner has open internet access. Issue text comes only from the operator, which keeps this risk low, but repo contents and dependencies are read by the agent too. This is the accepted residual risk, and the reason the spec applies only to the operator's own private repos.
 - **Nothing merges unreviewed, where protection exists.** Branch protection requires a PR and passing CI, and the operator merges by hand.
-- **Unprotected private repos.** Without branch protection the gate is a convention, not a control. The job has `contents: write`, so nothing technically stops the agent from pushing to the default branch; only the prompt tells it to open a PR. Until the open decision below is settled, the dev lane is used on unprotected private repos only where a bad push to the default branch is harmless, which means no workflow that deploys or publishes on push.
+- **Unprotected private repos.** Without branch protection the gate is a convention, not a control. The job has `contents: write`, so nothing technically stops the agent from pushing to the default branch; only the prompt tells it to open a PR. Two compensating controls apply on every repo, protected or not:
+  - **Detection.** The default-branch check in the workflow turns a silent direct push into a Telegram warning within the run.
+  - **Containment.** Deploy and publish workflows skip pushes made by the Claude GitHub App, so a direct push lands in the repo but does not reach production.
+
+  These detect and contain a bad push; they do not prevent one. A deny rule blocking `git push` to the default branch in the action's arguments was considered and is not relied on: it matches command text and is easy to get around. Until the open decision below is settled, the dev lane is used on unprotected private repos only where a bad push to the default branch is harmless or contained by the deploy guard.
 - **Subscription terms.** The action with a subscription token is a documented configuration. The token is "tied to the subscription of the person who ran `claude setup-token`", so it must not be shared with other people's repos.
 
 ## Trade-offs
@@ -239,7 +250,7 @@ What this design gives up compared with the Unimatrix dev lane:
 
 | # | Deliverable | Done when |
 |---|-------------|-----------|
-| 1 | Workflow template, notify script and `scripts/setup-dev-repo.sh`; no Helm service changes | Hand-labelling an issue in the test repo ends in an open PR with CI running on it and a Telegram message with the PR link; the agent made no direct push to the default branch |
+| 1 | Workflow template, notify script and `scripts/setup-dev-repo.sh`; no Helm service changes | Hand-labelling an issue in the test repo ends in an open PR with CI running on it and a Telegram message with the PR link; the agent made no direct push to the default branch; a push to the default branch during a run produces the warning message |
 | 2 | `github_dev.py`, the two endpoints, config, smoke script, Hermes planner skill | A Telegram message produces an issue link reply, then a PR link message |
 | 3 | `sections.dev` in the daily brief | Brief lists a PR awaiting review; brief still succeeds with GitHub unreachable |
 
@@ -257,9 +268,13 @@ The test repo is `xbonell/helm-dev-lane-test`: private, plain Node.js 24 with no
 | Accept an unenforced gate | Operator still reviews and merges by hand, but a direct push by the agent is possible | The gate depends on the prompt being followed |
 | Use the dev lane on public repos only | Protection is free there | Contradicts the private-repo assumption in Security: public logs, and outside content the agent may read |
 
-**Recommendation:** upgrade before using the dev lane on any private repo that matters. The unenforced gate is acceptable for the test repo and milestone 1 only.
+Repository rulesets are not a way around this. The rulesets API on the same repo returned the same refusal on 2026-11-14.
 
-**Not decided.** Milestone 1 proceeds on the unprotected test repo and records whether the agent ever pushed to the default branch directly. The decision is needed before milestone 2 is used on a real repo. A narrower mitigation, giving the job less than `contents: write`, is not available: the agent needs it to push its own branch.
+**Recommendation:** run milestone 1 on the unprotected test repo first, and upgrade when milestone 2 is about to be used on a real private repo. Milestone 1 can still fail for unrelated reasons, and upgrading before then would be wasted. For any repo that deploys, upgrade regardless of the compensating controls.
+
+**Not decided.** Milestone 1 proceeds on the unprotected test repo and records whether the agent ever pushed to the default branch directly. The decision is needed before milestone 2 is used on a real repo.
+
+A narrower mitigation, giving the job less than `contents: write`, is not available: the agent needs it to push its own branch. The detection and containment controls in Security are what the free plan allows instead.
 
 ## Remaining checks
 
@@ -272,7 +287,7 @@ All of these are settled in milestone 1 unless noted.
 5. **Run failure on usage limit.** See how the action reports a subscription usage limit, so the notify script can say so plainly.
 6. **Actions minutes.** Check the operator's GitHub plan allowance against an expected 10 to 30 minutes per run.
 7. **Direct pushes.** On the unprotected test repo, confirm from the branch history that every agent run produced a branch and a PR, never a commit on the default branch.
-8. **Rulesets.** Check whether repository rulesets offer any protection for private repos on the current plan. If they do, `scripts/setup-dev-repo.sh` uses them where branch protection is refused.
+8. **App actor name.** Find the exact `github.actor` value for pushes made by the Claude GitHub App, so the deploy guard and the notify script's commit list can name it. Confirm the default-branch check fires by pushing to the default branch during a test run.
 9. **`gpt-6-luna` as planner.** Test on a handful of real requests in milestone 2.
 
 Facts about the action and about cloud scheduled tasks in this spec come from Anthropic's documentation as read on 2026-11-14.
