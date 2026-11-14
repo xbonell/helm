@@ -93,7 +93,7 @@ Shipped as an M5 milestone in that repo; Helm depends on all four. The claims be
 
 - Extract the adapter-neutral part of `runCursorWork` (clone → `startSha` → prompt → `git add -A` → binary cached diff) so adapters only supply a prompt function. The flow lives in `adapter-cursor` today; it moves to a new package that both adapters import, which keeps the rule that providers and adapters do not import each other. The existing shape `{ cwd, instructions, apiKey }` changes so that `apiKey` is optional: each adapter resolves its own credential.
 - The shared flow gains an optional **isolated work tree** mode, which Helm turns on:
-  - The clone stays in a directory the agent cannot write to. The agent gets a copy of it (with its own `.git`, tokenless remote) as `cwd`.
+  - The clone stays in a directory the agent cannot write to. The agent gets a copy of it (with its own `.git`, tokenless remote) as `cwd`. By default the flow makes the copy itself; a host that runs the agent as another user supplies a hook that makes it and returns its path.
   - After the agent exits, the flow never runs git inside the agent's copy. It computes the patch with the pristine clone's git directory pointed at the agent's work tree (`--git-dir` / `--work-tree`), with hooks and `core.fsmonitor` disabled. Pushing needs no change: `submit` already clones the base branch afresh, applies the patch there and pushes (`createTokenizedGitPush`).
   - Anything the agent wrote under its own `.git` (hooks, config, credential helpers) is therefore never executed or read by the token-holding process.
 - CLI and library entry points take an adapter id (`--adapter cursor|claude-code`, default `cursor`) instead of hard-wiring `createSdkPrompt` and `CURSOR_API_KEY` in `apps/cli/src/github-flow.ts`. `CURSOR_API_KEY` is required only when the Cursor adapter is selected.
@@ -112,9 +112,11 @@ Shipped as an M5 milestone in that repo; Helm depends on all four. The claims be
 - Takes a wall-clock `timeoutSeconds`. How it is enforced depends on whether a launcher is set:
   - **No launcher (agent runs as the adapter's own user).** The adapter starts the agent in its own process group and on expiry signals the group (`SIGTERM`, then `SIGKILL` after a grace period).
   - **With a launcher (agent runs as another user).** The adapter cannot signal the agent: an unprivileged process may not signal another user's processes, and `SIGKILL` sent to the launcher is not relayed. Enforcement is therefore the host's job. The adapter passes `timeoutSeconds` to the launcher and treats exit status `124` as a timeout. A launcher that is itself killed by a signal, or exits `137`, is an ordinary failure, not a timeout (an out-of-memory kill looks the same).
-- Takes an optional `reaper` command that kills anything the agent left running. The adapter runs it exactly once per run, after the launcher has exited (or the backstop below has fired) and **before** the diff is computed, so leftover processes cannot change the work tree while it is read. It is never run from a late exit handler.
+- Takes an optional `reaper` command that kills anything the agent left running. The adapter runs it exactly once per run, after the launcher has exited (or the backstop below has fired) and **before** the diff is computed, so leftover processes cannot change the work tree while it is read. It is never run from a late exit handler. Called with the single argument `--check`, the reaper must verify that it could run and kill nothing.
+- Takes an optional `afterReap` hook, run once after the reaper and before the diff. The host uses it to take ownership of the work tree back from the agent user.
+- Takes an abort signal. On abort the adapter runs the reaper, waits for the launcher to exit, and reports `released` with reason `shutdown`.
 - Keeps a backstop timer of `timeoutSeconds` plus `backstopGraceSeconds` (default `60`; must be longer than the launcher's own `SIGTERM`-to-`SIGKILL` window). If the launcher has not exited by then, the adapter runs the `reaper` and waits up to 30 seconds more for the launcher to exit.
-- Reports the host as **unsafe** when the reaper fails, or when the launcher is still alive after the backstop and reaper. The adapter never returns while a launcher it started is still running without saying so. An unsafe result releases the unit and tells the host not to start another run in this process.
+- Reports the host as **unsafe** when the reaper fails, or when the launcher is still alive after the backstop and reaper. The adapter never returns while a launcher it started is still running without saying so. An unsafe result is reported as `failed` and tells the host not to start another run in this process. It consumes an attempt on purpose: processes that cannot be reaped come from the unit's own run, and a unit that does this every time must run out of attempts instead of being reclaimed for ever.
 - A timeout is reported as `failed`.
 - After cloning with the tokenized URL, the shared run flow resets the clone's remote to the tokenless URL before the agent starts, so the GitHub token is not readable from `.git/config`. This applies to every adapter.
 - Default invocation:
@@ -130,13 +132,13 @@ Shipped as an M5 milestone in that repo; Helm depends on all four. The claims be
   ```
 
 - `bypassPermissions` is the only mode that lets the agent run the project's own build and test commands without prompts. It is acceptable only under the host conditions listed in Helm's Security section; the adapter's README states them, and the CLI itself refuses this mode when run as root.
-- Options exposed to the host: `maxTurns`, `disallowedTools`, `timeoutSeconds`, `backstopGraceSeconds`, `launcher`, `reaper`, and `maxBudgetUsd` (maps to `--max-budget-usd`; meaningful only with API-key auth).
+- Options exposed to the host: `maxTurns`, `disallowedTools`, `timeoutSeconds`, `backstopGraceSeconds`, `launcher`, `reaper`, `afterReap`, an abort signal, and `maxBudgetUsd` (maps to `--max-budget-usd`; meaningful only with API-key auth).
 - The JSON result is used only to tell success from a run error. The patch still comes from the git diff.
-- `doctor` gains a check that `claude` can be started and can authenticate. It takes the same `launcher` and `reaper` options as a run and checks through them: `claude --version` via the launcher, the authentication check via the launcher (which proves the environment is carried across), and the reaper exiting `0`.
+- `doctor` gains a check that `claude` can be started and can authenticate. It takes the same `launcher` and `reaper` options as a run and checks through them: `claude --version` via the launcher, the authentication check via the launcher (which proves the environment is carried across), and `<reaper> --check` exiting `0`. `doctor` never runs the reaper for real, so it is safe to run while a unit is in progress.
 - Result mapping:
-  - Binary missing, authentication failure, launcher failure (exit `125`) or an unsafe host → `released`. None of these consume an attempt.
+  - Binary missing, authentication failure, launcher failure (exit `125`) or shutdown → `released`. None of these consume an attempt.
   - Transient errors that say nothing about the work (subscription usage limit, rate limit, API overloaded, network or proxy failure) → `released`, with a `transient` reason and the limit's reset time when the CLI reports one. These do not consume an attempt.
-  - Timeout, any other non-zero exit during the run, or an empty patch → `failed`.
+  - Timeout, an unsafe host, any other non-zero exit during the run, or an empty patch → `failed`.
 - Must not import `provider-github` (existing rule).
 
 ### 3. Watch mode
@@ -147,7 +149,9 @@ Shipped as an M5 milestone in that repo; Helm depends on all four. The claims be
 - Emits structured events (claimed, submitted with PR number, released with reason, failed with reason) so a host process can forward them.
 - Takes an optional host callback that is asked before each claim and can decline it. Helm uses it for the daily cap and the usage-limit pause.
 - On start, releases any `leased` or `running` assignment the client still holds from a previous process. Watch mode runs one unit at a time, so anything it holds at start-up is orphaned. Left alone, it would block the unit until the lease ran out and then count as `expired`, which consumes an attempt; `released` does not. The existing pieces cover this: the protocol allows `leased` and `running` → `released`, and a client can already rewrite its own assignment comment (`patchOwnAssignment`).
-- Stops claiming and returns an error to the host after an unsafe result or a launcher failure, instead of moving on to the next unit.
+- Stops claiming and returns an error to the host after an unsafe result or a launcher failure, instead of moving on to the next unit. The host can resume it.
+- Sets each run's timeout from the unit it claimed, not from a fixed value. The limit is the smaller of the host's `timeoutSeconds` and the time left on that unit's lease when the agent is about to start (after the clone and copy), minus a host-supplied margin. If less than 60 seconds remain, the unit is released without running. This covers units published elsewhere with a short `leaseDuration`, and slow clones.
+- On an abort signal from the host, stops claiming, aborts the run in progress and releases its assignment before returning.
 - Lease expiry and claim races are already handled by the provider; watch mode itself adds no new state. Any state behind the callback belongs to the host.
 
 ### 4. Portable mechanical workflow
@@ -173,31 +177,37 @@ Besides the watch loop, the worker runs an **outcome recorder** on each tick. Th
 - `mechanical` units are left to the Actions recorder.
 - A human rejection is not detected automatically. A unit stays `awaiting_review` until the operator approves the PR, records a failure with the CLI (`record-outcome --phase human --verdict fail`), or closes the issue.
 
-The image has two non-root users. The service runs as `worker`, which owns the secrets and the pristine clones. The agent runs as `agent`. `agent` can write only to its per-run copy of the clone and its own `HOME`.
+The image has two non-root users. The service runs as `worker`, which owns the secrets and the pristine clones. The agent runs as `agent`. `agent` can write only to its per-run directory, which holds its copy of the clone and a fresh, empty `HOME`.
 
 `worker` cannot signal `agent`'s processes, so starting and stopping the agent both go through `sudo`. The timer and the reaper must also be out of the agent's reach: a process running as `agent` could stop or kill them. Both therefore run as **root**, and only `claude` itself runs as `agent`.
 
-Exactly two `sudo` rules exist, each letting `worker` run one fixed script as root and nothing else. Both scripts are owned by root, writable by neither user, call other binaries by absolute path, and do nothing in the working directory before dropping privileges:
+Handing the work tree to `agent` and taking it back also need root, because `worker` can neither give files to another user nor read or delete what that user makes unreadable.
+
+Exactly three `sudo` rules exist, each letting `worker` run one fixed script as root and nothing else. The scripts are owned by root, writable by neither user, and call other binaries by absolute path. Every `<run-id>` must match `[a-z0-9-]+` and always resolves under one fixed directory, `/work/agent/<run-id>`:
 
 | Script | Arguments | What it does |
 |--------|-----------|--------------|
-| `/usr/local/bin/run-agent` | `<seconds> <claude flags...>` | Runs `claude <flags...>` as `agent` under a root-owned `timeout --signal=TERM --kill-after=10 <seconds>`, and translates the result into the launcher exit statuses. The binary is always `claude`; the caller chooses only its flags. |
-| `/usr/local/bin/reap-agent` | none | Sends `SIGKILL` to every process owned by `agent`, repeating until none remain. Exits non-zero if any are left after 20 seconds. Catches processes that left the process group (for example a build tool that daemonises). |
+| `/usr/local/bin/agent-tree` | `create <run-id> <clone-dir>` or `seal <run-id>` | `create` copies the pristine clone to `/work/agent/<run-id>/tree`, makes an empty `/work/agent/<run-id>/home`, and gives both to `agent`. `seal` gives the whole run directory back to `worker` and makes it readable, without following symlinks, and deletes anything `agent` left in `/tmp` and `/var/tmp`. |
+| `/usr/local/bin/run-agent` | `<run-id> <seconds> <claude flags...>` | Runs `claude <flags...>` as `agent`, in the run's `tree` with the run's `home` as `HOME` and `TMPDIR` inside it, under a root-owned `timeout --signal=TERM --kill-after=10 <seconds>`. Translates the result into the launcher exit statuses. The binary is always `claude`; the caller chooses only its flags. |
+| `/usr/local/bin/reap-agent` | none, or `--check` | Sends `SIGKILL` to every process owned by `agent`, repeating until none remain. Exits non-zero if any are left after 20 seconds. Catches processes that left the process group (for example a build tool that daemonises). With `--check` it only verifies that it could do this and kills nothing. |
 
 `run-agent` in detail:
 
 - **Arguments.** `<seconds>` must be a whole number from `1` to `86400`. Zero (which `timeout` reads as "no limit"), fractions and anything else are rejected with exit `125`.
 - **Environment.** The `sudo` rule for `run-agent` keeps exactly five variable names from the caller: `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY`. The script starts `claude` with a clean environment made of those plus a fixed `PATH` and `HOME` for `agent`. The credential is never an argument.
 - **Privilege drop.** `claude` is started with `setpriv` as `agent` (user, group and supplementary groups) with `no_new_privs` set, so nothing the agent runs can use `sudo` or a setuid binary.
-- **Exit status.** `124` when `timeout` reports a timeout, or reports a kill (`137`) at or after `<seconds>` have elapsed. `125` for the script's own failures, including `timeout`'s `125`–`127`. Otherwise `claude`'s status, so a `137` before the limit (for example an out-of-memory kill) stays an ordinary failure.
+- **Pre-flight.** Before starting the timer, the script runs the same `setpriv` invocation with a no-op command. If that fails (missing user, bad groups), it exits `125`. A failed privilege drop is therefore never mistaken for `claude`'s own exit status.
+- **Exit status.** `124` when `timeout` reports a timeout, or reports a kill (`137`) at or after `<seconds>` have elapsed. `125` for the script's own failures, including the pre-flight and `timeout`'s `125`–`127`. Otherwise `claude`'s status, so a `137` before the limit (for example an out-of-memory kill) stays an ordinary failure.
 
-`dev-worker` passes `run-agent` as the adapter's `launcher` and `reap-agent` as its `reaper`.
+For each run, `dev-worker` calls `agent-tree create`, passes `run-agent <run-id>` as the adapter's `launcher`, `reap-agent` as its `reaper`, and `agent-tree seal <run-id>` as its `afterReap` hook. After the seal no `agent` process exists and `worker` owns the files, so the worker can compute the diff and then delete the run directory itself. Nothing the agent wrote, in the tree, its `HOME` or the temp directories, survives into the next run. The cost is that package-manager caches are rebuilt on every run.
 
 Process lifecycle:
 
 - Compose sets `init: true` for `dev-worker` and a `pids_limit`. When the worker process exits, the container stops and every process in it dies, so a restart always begins with no `agent` processes. There is no start-up reap.
-- On an unsafe result (the reaper failed, or `run-agent` outlived the backstop), the worker sends a Telegram message and exits non-zero. `restart: unless-stopped` brings up a clean container.
-- At start-up the worker runs `doctor` through the launcher and reaper. If that fails, it stays up with `GET /v1/status` reporting `status: "error"` and does not claim. A launcher failure during a run (exit `125`) puts it in the same state until `doctor` passes again, so a misconfigured host does not loop through the queue.
+- On an unsafe result (the reaper failed, or `run-agent` outlived the backstop), the worker marks the unit `failed`, sends a Telegram message and exits non-zero. `restart: unless-stopped` brings up a clean container. Because the attempt is consumed, a unit that does this repeatedly stops after `maxAttempts`.
+- At start-up the worker runs `doctor` through the launcher and `reap-agent --check`. If that fails, it stays up with `GET /v1/status` reporting `status: "error"` and does not claim. A launcher failure during a run (exit `125`) puts it in the same state, so a misconfigured host does not loop through the queue.
+- While in that state the worker re-runs `doctor` every five minutes and resumes claiming when it passes. It sends one Telegram message on entering the state and one on leaving it.
+- On `SIGTERM` (for example `docker compose down`) the worker aborts the watch loop, which reaps the agent and releases the assignment, then exits. Compose sets `stop_grace_period: 60s` to allow for this. If the container is killed before it finishes, the start-up release below still applies.
 - At start-up watch mode releases any assignment left over from the previous process.
 
 All endpoints except `/health` require `Authorization: Bearer $DEV_WORKER_API_KEY`; a missing or wrong key returns `401`. Hermes and `personal-assistant` receive the key from compose. The agent does not.
@@ -226,7 +236,7 @@ All endpoints except `/health` require `Authorization: Bearer $DEV_WORKER_API_KE
 - Publishing is never blocked by the daily cap. Once `DEV_WORKER_MAX_UNITS_PER_DAY` runs have started that day (`Europe/Madrid`), the watch loop stops claiming and remaining units stay `queued` until the next day. Runs released as `transient` are not counted.
 - When a run is released for a usage limit, the worker stops claiming until the reset time the CLI reported, or for one hour if it reported none.
 - The day's run count and the pause-until time are kept in `data/dev-worker/state.json` (a bind mount like other services' state), so a restart does not reset them.
-- Each run has a wall-clock limit, `DEV_WORKER_RUN_TIMEOUT_SECONDS` (default `1800`). It must be a positive whole number and at least 300 seconds below `leaseDuration`. The margin covers the kill window (10 s), the backstop grace (60 s), the reaper and the wait after it (50 s), and the diff and push, so a run always ends while its lease is still valid. The worker checks this at start-up and refuses to start otherwise.
+- Each run has a wall-clock limit, `DEV_WORKER_RUN_TIMEOUT_SECONDS` (default `1800`). It must be a positive whole number and at least 300 seconds below the worker's own default `leaseDuration`; the worker checks this at start-up and refuses to start otherwise. That value is only an upper limit. For each run, watch mode sets the actual timeout from the claimed unit's lease, measured when the agent is about to start and less a 300-second margin. The margin covers the kill window (10 s), the backstop grace (60 s), the reaper and the wait after it (50 s), and the diff and push, so a run always ends while its lease is still valid.
 - Policy defaults: `maxAttempts: 2`, `maxConcurrentAssignments: 1`, `leaseDuration: 3600`.
 
 `GET /v1/status` response:
@@ -294,7 +304,7 @@ The skill does not call Decider. The Decider `development` candidate stays unhan
 | `DEV_WORKER_INTERVAL_SECONDS` | dev-worker | Watch tick, default `60` |
 | `DEV_WORKER_MAX_TURNS` | dev-worker | Agent turn limit per run, default `50` |
 | `DEV_WORKER_MAX_BUDGET_USD` | dev-worker | Per-run spend cap; applied only when `DEV_WORKER_AUTH=api_key` |
-| `DEV_WORKER_RUN_TIMEOUT_SECONDS` | dev-worker | Wall-clock limit per run, default `1800`; positive whole number, at least 300 below the lease duration |
+| `DEV_WORKER_RUN_TIMEOUT_SECONDS` | dev-worker | Upper limit on a run's wall-clock time, default `1800`; positive whole number, at least 300 below the default lease duration. Shortened per run to fit the unit's lease |
 | `DEV_WORKER_EGRESS_ALLOW` | dev-egress-proxy | Extra hosts the worker may reach, comma-separated, on top of the built-in list |
 | `DEV_WORKER_AUTH` | dev-worker | `subscription` (default) or `api_key` |
 | `DEV_WORKER_ANTHROPIC_API_KEY` | dev-worker | Anthropic key, used only when `DEV_WORKER_AUTH=api_key` |
@@ -338,7 +348,7 @@ repos:
         params: { command: pnpm, args: [test] }
 ```
 
-Each allowlisted repo needs four things: the portable `unimatrix-mechanical` workflow on its default branch, the `UNIMATRIX_READ_TOKEN` secret, the GitHub App installed, and the machine account added as a collaborator. The smoke script checks the first, third and fourth. `scripts/healthcheck.sh` gains a "Dev worker" line, probed with `docker compose exec` as for Decider; a new `scripts/smoke-dev-worker.sh` runs `doctor` against each allowlisted repo, with the same launcher and reaper the service uses.
+Each allowlisted repo needs four things: the portable `unimatrix-mechanical` workflow on its default branch, the `UNIMATRIX_READ_TOKEN` secret, the GitHub App installed, and the machine account added as a collaborator. The smoke script checks the first, third and fourth. `scripts/healthcheck.sh` gains a "Dev worker" line, probed with `docker compose exec` as for Decider; a new `scripts/smoke-dev-worker.sh` runs `doctor` against each allowlisted repo, with the same launcher and reaper the service uses. `doctor` only calls the reaper with `--check`, so the script is safe to run during a unit.
 
 ## Security
 
@@ -353,9 +363,9 @@ Each allowlisted repo needs four things: the portable `unimatrix-mechanical` wor
 - The worker's API requires a bearer key the agent does not have, so the agent cannot publish work units through `localhost:8084`.
 - The request cannot weaken a repo's validation mode or supply checks, so neither a misread Telegram message nor another container can remove the review gate or choose the command CI runs.
 - The agent runs in `bypassPermissions` mode, so three host conditions are mandatory:
-  - **Non-root.** The service and the agent both run as non-root users (the CLI refuses bypass mode as root). Root exists in the container only inside the two fixed scripts, `run-agent` and `reap-agent`, which `worker` reaches through `sudo`. `worker` controls only a validated number, five named environment variables, and flags for a `claude` process that has already dropped to `agent`. `agent` has no `sudo` rule and runs with `no_new_privs`.
+  - **Non-root.** The service and the agent both run as non-root users (the CLI refuses bypass mode as root). Root exists in the container only inside the three fixed scripts, `agent-tree`, `run-agent` and `reap-agent`, which `worker` reaches through `sudo`. `worker` controls only a validated run id and number, the path of a clone it owns, five named environment variables, and flags for a `claude` process that has already dropped to `agent`. `agent` has no `sudo` rule and runs with `no_new_privs`.
   - **Egress allowlist.** `dev-worker` is attached only to the internal `helm-dev` network and reaches the internet through `dev-egress-proxy`. Built-in hosts: `api.anthropic.com`, `github.com`, `api.github.com`, `api.telegram.org` and `registry.npmjs.org`; `DEV_WORKER_EGRESS_ALLOW` adds registries a repo needs. Everything else is refused, which limits what a prompt-injected agent could send out.
-  - **Bounded runs.** A wall-clock timeout and a reaper that both run as root, so the agent cannot stop, kill or outlive them; the reaper clears leftover `agent` processes after every run, and the worker restarts the container if it cannot. Also `--max-turns`, a `pids_limit`, no web fetch or search tools, and no session persistence.
+  - **Bounded runs.** A wall-clock timeout and a reaper that both run as root, so the agent cannot stop, kill or outlive them; the reaper clears leftover `agent` processes after every run, the seal step clears the agent's files, and the worker restarts the container if the reaper cannot finish. Also `--max-turns`, a `pids_limit`, no web fetch or search tools, and no session persistence.
 - The allowlist reduces but does not remove exfiltration risk: the agent can still reach GitHub and Telegram hosts through the proxy, can reach Hermes and `personal-assistant` on `helm-dev` (Hermes' API needs a key the agent lacks), and holds its own Claude credential. That is the accepted residual risk for unattended runs on the operator's own repos.
 - The machine-account PAT is scoped to the allowlisted repos only. It cannot approve its own PRs, so `both` and `human` modes always need the operator.
 - The PAT is a fine-grained token **without** the Workflows permission. `pull_request` runs use the workflow file from the PR itself, so an agent that could push a change under `.github/workflows` could rewrite its own mechanical check. Without that permission GitHub rejects the push and the unit fails.
@@ -376,9 +386,9 @@ Each allowlisted repo needs four things: the portable `unimatrix-mechanical` wor
 
 | # | Repo | Deliverable | Done when |
 |---|------|-------------|-----------|
-| 1 | unimatrix | Adapter selection, isolated work tree mode + `adapter-claude-code` | `claim-run-submit --adapter claude-code` opens a PR with no Cursor installed and no API key set; a hook planted in the agent's copy does not run; with a fake launcher, exit `124` is reported as a timeout, exit `125` releases the unit without using an attempt, a launcher that never exits triggers the backstop and an unsafe result, and the reaper runs exactly once in each case |
+| 1 | unimatrix | Adapter selection, isolated work tree mode + `adapter-claude-code` | `claim-run-submit --adapter claude-code` opens a PR with no Cursor installed and no API key set; a hook planted in the agent's copy does not run; with a fake launcher, exit `124` is reported as a timeout, exit `125` releases the unit without using an attempt, a launcher that never exits triggers the backstop and an unsafe (`failed`) result, an abort releases the unit, and the reaper runs exactly once in each case |
 | 2 | unimatrix | `watch`, issue listing, portable mechanical workflow | A published unit is picked up and submitted with no further commands; in a repository other than Unimatrix, a PR with a failing check command gets a failed `unimatrix-mechanical` check, and a missing runner fails the job |
-| 3 | helm | `dev-worker` service with `helm-dev` network, egress proxy, API key, config, healthcheck, smoke script | `POST /v1/work-units` on a test repo ends in an open PR with a passing mechanical check, and after the operator approves it the unit reaches `validated` with no manual command; a request to a non-allowlisted host from inside the container is refused; `doctor` passes through the launcher; a run that ignores `SIGTERM` past the timeout is killed and reported as a timeout; a child started with `setsid` is gone after the run; as `agent`, signalling the `timeout` or `reap-agent` process fails with a permission error |
+| 3 | helm | `dev-worker` service with `helm-dev` network, egress proxy, API key, config, healthcheck, smoke script | `POST /v1/work-units` on a test repo ends in an open PR with a passing mechanical check, and after the operator approves it the unit reaches `validated` with no manual command; a request to a non-allowlisted host from inside the container is refused; `doctor` passes through the launcher; a run that ignores `SIGTERM` past the timeout is killed and reported as a timeout; a child started with `setsid` is gone after the run; as `agent`, signalling the `timeout` or `reap-agent` process fails with a permission error; a file written to the agent's `HOME` in one run is absent in the next; `docker compose stop` mid-run leaves the assignment `released`; the smoke script run mid-run does not disturb it |
 | 4 | helm | Hermes planner skill + Telegram notifications | A Telegram message produces a PR link reply |
 | 5 | helm | `sections.dev` in the daily brief | Brief lists a PR awaiting review; brief still succeeds with `dev-worker` stopped |
 
@@ -404,7 +414,7 @@ These do not block the design but should be done before or during implementation
 3. **`gpt-6-luna` as planner.** OpenAI recommends it for cost-sensitive, high-volume work but does not rate it for tool calling. Milestone 4 should test it on a handful of real requests before it is relied on.
 4. **Flag names at the pinned version.** The flags above are from the Claude Code docs as of 2026-11-13; re-check them when `CLAUDE_CODE_VERSION` is chosen, along with reading the prompt from stdin.
 5. **Transient-error detection.** Confirm how the pinned CLI reports a usage limit and its reset time in `--output-format json`, so the adapter can tell it from a real run failure.
-6. **Agent tooling as a second user.** Confirm the repo's build and test commands work as `agent` in the copied work tree (file ownership, package-manager caches under the agent's `HOME`).
+6. **Agent tooling as a second user.** Confirm the repo's build and test commands work as `agent` in the copied work tree with an empty `HOME`, and measure what rebuilding package caches on every run costs.
 7. **Launcher tooling in the image.** Confirm the base image ships GNU `timeout` (BusyBox's takes different options) and `setpriv`, and that the instructions on stdin reach `claude` through `sudo`, `timeout` and `setpriv`. The kill and reap behaviour itself is part of milestone 3's "done when".
 8. **Workflows permission.** Confirm on a test repo that a push touching `.github/workflows` is rejected for the machine account's fine-grained token.
 9. **Unimatrix visibility.** Decide whether `xbonell/unimatrix` stays private. If it becomes public, the `UNIMATRIX_READ_TOKEN` secret and the host checkout are no longer needed.
