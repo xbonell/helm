@@ -1,0 +1,60 @@
+# Installed into target repos as .github/workflows/helm-dev.yml by
+# scripts/setup-dev-repo.sh in xbonell/helm. Edit the template there, not here.
+# Spec: docs/superpowers/specs/2026-11-14-hosted-dev-lane-design.md
+name: helm-dev
+on:
+  issues:
+    types: [labeled]
+
+concurrency:
+  group: helm-dev
+  cancel-in-progress: false
+
+jobs:
+  implement:
+    if: github.event.label.name == 'helm-dev'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Record default branch
+        id: base
+        run: echo "sha=$(git ls-remote origin "refs/heads/${{ github.event.repository.default_branch }}" | cut -f1)" >> "$GITHUB_OUTPUT"
+
+      # The agent works in the checkout and could change the notify script
+      # before the final step runs, so keep a pristine copy outside it.
+      - name: Stash notify script
+        run: cp .github/helm-dev-notify.sh "$RUNNER_TEMP/helm-dev-notify.sh"
+
+      - name: Claude
+        id: claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          label_trigger: helm-dev
+          prompt: |
+            Implement issue #${{ github.event.issue.number }} as described in its body.
+            Run the project's tests. Commit to a new branch and open a pull request
+            that references the issue. Comment the PR link on the issue.
+          claude_args: "--max-turns 50"
+
+      - name: Notify
+        if: always()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.HELM_TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.HELM_TELEGRAM_CHAT_ID }}
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+          BRANCH: ${{ steps.claude.outputs.branch_name }}
+          EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+        run: bash "$RUNNER_TEMP/helm-dev-notify.sh" "${{ job.status }}" "${{ github.event.issue.number }}"
