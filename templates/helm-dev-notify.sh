@@ -38,7 +38,7 @@ if [[ -z "$base_sha" || -z "$head_sha" ]]; then
   warning="⚠ Default-branch check unavailable for $default_branch. Check its history by hand."
 elif [[ "$head_sha" != "$base_sha" ]]; then
   commits="$(gh api "repos/$repo/compare/$base_sha...$head_sha" \
-    --jq '.commits[] | "- \(.sha[0:7]) \(.author.login // .commit.author.name) (committer: \(.committer.login // .commit.committer.name)): \(.commit.message | split("\n")[0])"' \
+    --jq '.commits[] | "- \(.sha[0:7]) \(.commit.author.name) [login: \(.author.login // "none")]: \(.commit.message | split("\n")[0])"' \
     2>/dev/null || true)"
   warning="⚠ $default_branch moved during this run. New commits:
 ${commits:-  (could not list commits; compare $server/$repo/compare/$base_sha...$head_sha)}"
@@ -77,6 +77,11 @@ if [[ -n "${EXECUTION_FILE:-}" && -r "${EXECUTION_FILE:-}" ]] \
   && grep -qiE 'usage limit|rate limit|limit reached|limit will reset' "$EXECUTION_FILE"; then
   result+="
 Claude usage limit hit. Re-apply the helm-dev label later."
+fi
+if [[ -n "${EXECUTION_FILE:-}" && -r "${EXECUTION_FILE:-}" ]] \
+  && grep -qiE 'authentication_failed|OAuth access token is invalid' "$EXECUTION_FILE"; then
+  result+="
+Claude token rejected (401). Replace the CLAUDE_CODE_OAUTH_TOKEN secret."
 fi
 
 if [[ -n "$warning" ]]; then
