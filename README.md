@@ -175,5 +175,3 @@ Aliases are optional, created outside this repo with `dev-setup integrate` (Port
 ## Milestone status
 
 Milestone 10 (daily brief MVP) is complete for local Docker Compose. See [docs/development.md](docs/development.md).
-
-Foo!
