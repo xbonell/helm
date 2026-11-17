@@ -19,7 +19,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LABEL="helm-dev"
-APP_ACTOR="claude[bot]"
+# Agent runs act as claude[bot] (PRs, comments) but its git pushes are
+# recorded as github-actions[bot] (observed in M1), so guard both.
+APP_ACTORS=("claude[bot]" "github-actions[bot]")
 SECRETS=(CLAUDE_CODE_OAUTH_TOKEN HELM_TELEGRAM_BOT_TOKEN HELM_TELEGRAM_CHAT_ID)
 
 usage() {
@@ -144,8 +146,8 @@ done < <(gh api "repos/$repo/contents/.github/workflows?ref=$branch" --jq '.[] |
 if [[ $found -eq 1 ]]; then
   cat <<EOF
   If a workflow above deploys or publishes on push to $branch, add this to
-  each such job so pushes by the Claude GitHub App do not deploy:
-      if: github.actor != '$APP_ACTOR'
+  each such job so pushes made by helm-dev agent runs do not deploy:
+      if: github.actor != '${APP_ACTORS[0]}' && github.actor != '${APP_ACTORS[1]}'
 EOF
 else
   echo "  none"
